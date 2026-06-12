@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ChevronLeft, ChevronRight, X, Save, Trash2, Star, ChevronDown, Plus, Share2, Copy, Check, Upload, Film, AlertCircle, Download, Sun, Moon, Search, LogIn, LogOut, Cloud, CloudOff, CalendarDays, History, Share, Menu, Gem, TrendingUp } from 'lucide-react';
+import { ChevronLeft, ChevronRight, X, Save, Trash2, Star, ChevronDown, Plus, Share2, Copy, Check, Upload, Film, AlertCircle, Download, Sun, Moon, Search, LogIn, LogOut, Cloud, CloudOff, CalendarDays, History, Share, Menu, Gem, TrendingUp, Info, ShieldCheck } from 'lucide-react';
 import { AFFILIATES } from './affiliates';
+import * as wp from './wpContent';
 import { computeRecordStats, computeAnalysis, drawRecordCard, drawAnalysisCard } from './stats';
 import { storage } from './storage';
 import * as adapter from './syncAdapter';
@@ -76,6 +77,8 @@ export default function SettingsDiary() {
   const [menuOpen, setMenuOpen] = useState(false); // hamburger menu (export / import / theme / auth)
   const [tlPlayer, setTlPlayer] = useState(null); // timeline inline playback: { id, blobUrl, loading }
   const [anGame, setAnGame] = useState('ALL'); // Analysis tab game filter
+  const [ads, setAds] = useState(AFFILIATES); // affiliate banners (WP-managed, static fallback)
+  const [infoPage, setInfoPage] = useState(null); // WP page modal: { kind, title, html|null(loading) }
   const uploadRef = useRef(null); // in-flight clip upload: { file, abort, driveId, saved }
   const preloadRef = useRef({ cache: new Map(), queue: [], running: false }); // PC only: prefetched clip Blobs (driveId → Blob)
   const videoSharePrepRef = useRef(null); // de-dupes concurrent share preparations
@@ -133,6 +136,28 @@ export default function SettingsDiary() {
     const next = theme === 'light' ? 'dark' : 'light';
     setTheme(next);
     try { await storage.set('theme', next); } catch (e) {}
+  };
+
+  // ── WordPress(mone2.jp)連携: アフィリエイト枠と固定ページ ──
+  useEffect(() => {
+    let alive = true;
+    wp.loadAds((list) => {
+      if (alive && Array.isArray(list)) setAds(list);
+    });
+    return () => { alive = false; };
+  }, []);
+
+  const openInfoPage = (kind) => {
+    setMenuOpen(false);
+    const fallbackTitle = kind === 'about' ? 'このアプリについて' : 'プライバシーポリシー';
+    setInfoPage({ kind, title: fallbackTitle, html: null });
+    wp.loadPage(kind, (page) => {
+      setInfoPage((prev) => {
+        if (!prev || prev.kind !== kind) return prev;
+        if (!page) return { ...prev, html: '<p>このページは準備中です。</p>' };
+        return { kind, title: page.title || fallbackTitle, html: page.html };
+      });
+    });
   };
 
   const dismissIosInstallHint = async () => {
@@ -1089,6 +1114,14 @@ export default function SettingsDiary() {
         }
         .sd-tbtn:hover { color: var(--accent); border-color: var(--accent); }
         .sd-tbtn.on { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+        .wp-prose p { margin: 0 0 1em; }
+        .wp-prose h1, .wp-prose h2, .wp-prose h3, .wp-prose h4 { font-weight: 600; margin: 1.6em 0 .6em; font-size: 1.05em; letter-spacing: .04em; }
+        .wp-prose ul, .wp-prose ol { margin: 0 0 1em; padding-left: 1.4em; list-style: disc; }
+        .wp-prose ol { list-style: decimal; }
+        .wp-prose a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+        .wp-prose img { max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 2px; }
+        .wp-prose table { border-collapse: collapse; margin: 0 0 1em; }
+        .wp-prose th, .wp-prose td { border: 1px solid var(--line); padding: .4em .7em; }
       `}</style>
 
       <div className="max-w-5xl mx-auto px-5 sm:px-8 pt-8 sm:pt-12 pb-28 sm:pb-12">
@@ -1121,12 +1154,12 @@ export default function SettingsDiary() {
           </div>
         </header>
 
-        {/* PR / affiliate slot — configure in src/affiliates.js, hidden when empty */}
-        {AFFILIATES.length > 0 && (
+        {/* PR / affiliate slot — managed in WordPress (vildup-ads page), src/affiliates.js as fallback */}
+        {ads.length > 0 && (
           <div className="mb-5">
             <div className="text-[8px] tk-faint uppercase mb-1.5" style={{ letterSpacing: '.24em' }}>PR</div>
             <div className="flex gap-3 flex-wrap items-center">
-              {AFFILIATES.map((ad, i) => (
+              {ads.map((ad, i) => (
                 <a
                   key={i}
                   href={ad.href}
@@ -1229,6 +1262,18 @@ export default function SettingsDiary() {
                       ? <Moon className="w-4 h-4 tk-dim" strokeWidth={1.5} />
                       : <Sun className="w-4 h-4 tk-dim" strokeWidth={1.5} />}
                     {theme === 'light' ? 'ダークモード' : 'ライトモード'}
+                  </button>
+                  <button
+                    onClick={() => openInfoPage('about')}
+                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2"
+                  >
+                    <Info className="w-4 h-4 tk-dim" strokeWidth={1.5} /> このアプリについて
+                  </button>
+                  <button
+                    onClick={() => openInfoPage('privacy')}
+                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2"
+                  >
+                    <ShieldCheck className="w-4 h-4 tk-dim" strokeWidth={1.5} /> プライバシーポリシー
                   </button>
                 </div>
               </>
@@ -1887,6 +1932,36 @@ export default function SettingsDiary() {
           <span>{(isSignedIn ? 'Drive sync' : 'Local mode') + ' · α 0.0.1'}</span>
         </div>
       </div>
+
+      {/* ── WP info page modal (about / privacy — edited in WordPress) ── */}
+      {infoPage && (
+        <div
+          className="fixed inset-0 z-50 bg-backdrop flex items-center justify-center p-4 sm:p-8"
+          onClick={() => setInfoPage(null)}
+        >
+          <div
+            className="bg-modal border bd-line rounded-[2px] w-full max-w-2xl max-h-[85vh] overflow-y-auto sd-scroll"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 bg-modal border-b bd-line px-6 py-4 flex items-center justify-between gap-3 z-10">
+              <h3 className="text-[13px] font-medium truncate" style={{ letterSpacing: '.08em' }}>{infoPage.title}</h3>
+              <button onClick={() => setInfoPage(null)} className="tk-dim h-acc transition shrink-0" title="閉じる">
+                <X className="w-4 h-4" strokeWidth={1.5} />
+              </button>
+            </div>
+            {infoPage.html === null ? (
+              <div className="px-6 py-16 text-center text-[11px] tk-dim" style={{ letterSpacing: '.1em' }}>
+                読み込み中…
+              </div>
+            ) : (
+              <div
+                className="px-6 py-5 wp-prose text-[13px] leading-relaxed"
+                dangerouslySetInnerHTML={{ __html: infoPage.html }}
+              />
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Mobile bottom tab bar (app-like nav; desktop keeps the top tabs) ── */}
       <nav
