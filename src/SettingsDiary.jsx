@@ -1,0 +1,1598 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { ChevronLeft, ChevronRight, X, Save, Trash2, Star, ChevronDown, Plus, Share2, Copy, Check, Upload, Film, AlertCircle, Download, Sun, Moon, Search, LogIn, LogOut, Cloud, CloudOff } from 'lucide-react';
+import { storage } from './storage';
+import * as adapter from './syncAdapter';
+
+export default function SettingsDiary() {
+  // ── Helpers (declared first so effects/handlers can use them safely) ──
+  const formatDateKey = (date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
+  const getDaysInMonth = (date) => {
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const firstDay = new Date(year, month, 1).getDay();
+    const lastDate = new Date(year, month + 1, 0).getDate();
+    const days = [];
+    for (let i = 0; i < firstDay; i++) days.push(null);
+    for (let d = 1; d <= lastDate; d++) days.push(new Date(year, month, d));
+    return days;
+  };
+
+  const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  const ensureId = (e) => (e && e.id ? e : { ...e, id: genId() });
+
+  const EMPTY_FORM = {
+    game: '', rating: 0,
+    mouse: '', mousepad: '', keyboard: '',
+    dpi: '', sens: '', pollingRate: '', lod: '',
+    kbAp: '', kbRt: '', kbPollingRate: '',
+    memo: '', clipUrl: '', clipFile: null
+  };
+
+  // Setup fields tracked for "changed since last entry of same game" highlighting
+  const SETUP_FIELDS = ['mouse', 'mousepad', 'keyboard', 'dpi', 'sens', 'pollingRate', 'lod', 'kbAp', 'kbRt', 'kbPollingRate'];
+
+  // entries: { 'YYYY-MM-DD': [entryObj, ...] }  (array order = creation order, newest last)
+  const [view, setView] = useState('calendar'); // 'calendar' | 'timeline'
+  const [theme, setTheme] = useState('light'); // 'light' | 'dark'
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [selectedDate, setSelectedDate] = useState(null);
+  const [selectedEntryId, setSelectedEntryId] = useState(null); // null = creating new
+  const [entries, setEntries] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [saved, setSaved] = useState(false);
+  const [customGames, setCustomGames] = useState([]);
+  const [gameDropdownOpen, setGameDropdownOpen] = useState(false);
+  const [newGameInput, setNewGameInput] = useState('');
+  const [shareOpen, setShareOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [prefilledFrom, setPrefilledFrom] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [gameFilter, setGameFilter] = useState('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [importNotice, setImportNotice] = useState(null);
+  const [pendingImport, setPendingImport] = useState(null); // { entries, customGames, count } awaiting in-app confirmation
+  const fileInputRef = useRef(null);
+  const importInputRef = useRef(null);
+  const dragCounter = useRef(0);
+  const [formData, setFormData] = useState(EMPTY_FORM);
+  const [isSignedIn, setIsSignedIn] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('local'); // adapter status (see syncAdapter.js)
+  const [authBusy, setAuthBusy] = useState(false);
+  const [syncHint, setSyncHint] = useState(false); // had a Drive session before, not signed in yet
+  const [logoutConfirm, setLogoutConfirm] = useState(false);
+
+  const PRESET_GAMES = ['VALORANT', 'OVERWATCH 2', 'APEX LEGENDS', 'CS2', 'Marvel Rivals', 'Rainbow Six Siege X', 'Fortnite', 'Battlefield', 'Call of Duty', 'Kovaaks', 'AimLab'];
+  const allGames = [...PRESET_GAMES, ...customGames];
+
+  // ── Initial load: single doc via the storage adapter (theme stays device-local) ──
+  useEffect(() => {
+    async function loadInitial() {
+      try {
+        try {
+          const t = await storage.get('theme');
+          if (t && (t.value === 'dark' || t.value === 'light')) setTheme(t.value);
+        } catch (e) {}
+
+        const data = await adapter.loadAll();
+        if (data.entries && Object.keys(data.entries).length) setEntries(data.entries);
+        if (Array.isArray(data.customGames) && data.customGames.length) setCustomGames(data.customGames);
+
+        if (adapter.isConfigured() && (await adapter.hadSession())) setSyncHint(true);
+      } catch (e) {
+        console.error('Load error:', e);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadInitial();
+
+    // Drive had newer data on sign-in → adopt it wholesale (last-write-wins)
+    adapter.setRemoteHandler((data) => {
+      setEntries(data.entries || {});
+      setCustomGames(data.customGames || []);
+    });
+    return adapter.subscribe(({ status, signedIn }) => {
+      setSyncStatus(status);
+      setIsSignedIn(signedIn);
+    });
+  }, []);
+
+  const toggleTheme = async () => {
+    const next = theme === 'light' ? 'dark' : 'light';
+    setTheme(next);
+    try { await storage.set('theme', next); } catch (e) {}
+  };
+
+  // ── Google Drive sync (Phase 2) ──
+  const SYNC_LABELS = {
+    connecting: '接続中…',
+    syncing: '同期中…',
+    synced: 'Drive 同期済み',
+    offline: 'オフライン(未同期)',
+    'needs-login': '再ログインが必要',
+    error: '同期エラー(自動再試行)',
+    local: 'ローカル保存',
+  };
+
+  const handleLogin = async () => {
+    if (!adapter.isConfigured()) {
+      setImportNotice({ ok: false, msg: 'Google クライアント ID が未設定です(.env の VITE_GOOGLE_CLIENT_ID を設定してください)' });
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      await adapter.signIn();
+      setSyncHint(false);
+      setImportNotice({ ok: true, msg: 'Google Drive と接続しました。データを同期します。' });
+      setTimeout(() => setImportNotice(null), 4000);
+    } catch (e) {
+      console.error('Sign-in error:', e);
+      setImportNotice({ ok: false, msg: `ログインできませんでした: ${e.message || e}` });
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const confirmLogout = async (keepLocal) => {
+    setLogoutConfirm(false);
+    try {
+      await adapter.signOut({ keepLocal });
+      if (!keepLocal) {
+        setEntries({});
+        setCustomGames([]);
+      }
+    } catch (e) {
+      console.error('Sign-out error:', e);
+    }
+  };
+
+  // Latest entry across all days (newest day, last item) — used for carry-over
+  const latestEntryOverall = () => {
+    const keys = Object.keys(entries).sort((a, b) => b.localeCompare(a));
+    for (const k of keys) {
+      const list = entries[k];
+      if (list && list.length) return { key: k, entry: list[list.length - 1] };
+    }
+    return null;
+  };
+
+  // ── Form initialization on date/entry selection ──
+  useEffect(() => {
+    if (!selectedDate) return;
+    const key = formatDateKey(selectedDate);
+    const dayList = entries[key] || [];
+
+    if (selectedEntryId) {
+      const entry = dayList.find(e => e.id === selectedEntryId);
+      if (entry) {
+        setFormData({ ...EMPTY_FORM, ...entry });
+        setPrefilledFrom(null);
+      }
+    } else {
+      // New entry — carry over setup from the most recent entry anywhere
+      const last = latestEntryOverall();
+      if (last) {
+        const ld = last.entry;
+        setFormData({
+          ...EMPTY_FORM,
+          game: ld.game || '',
+          mouse: ld.mouse || '',
+          mousepad: ld.mousepad || '',
+          keyboard: ld.keyboard || '',
+          dpi: ld.dpi || '',
+          sens: ld.sens || '',
+          pollingRate: ld.pollingRate || '',
+          lod: ld.lod || '',
+          kbAp: ld.kbAp || '',
+          kbRt: ld.kbRt || '',
+          kbPollingRate: ld.kbPollingRate || '',
+          // rating, memo, clipUrl, clipFile deliberately left empty
+        });
+        setPrefilledFrom(last.key);
+      } else {
+        setFormData(EMPTY_FORM);
+        setPrefilledFrom(null);
+      }
+    }
+
+    setGameDropdownOpen(false);
+    setNewGameInput('');
+    setShareOpen(false);
+  }, [selectedDate, selectedEntryId]);
+
+  const clearPrefilled = () => {
+    setFormData(EMPTY_FORM);
+    setPrefilledFrom(null);
+  };
+
+  // Close modal on Escape key
+  useEffect(() => {
+    if (!selectedDate) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        if (gameDropdownOpen) { setGameDropdownOpen(false); return; }
+        if (shareOpen) { setShareOpen(false); return; }
+        closeModal();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedDate, gameDropdownOpen, shareOpen]);
+
+  // ── File upload handlers ──
+  const formatBytes = (bytes) => {
+    if (!bytes) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    let n = bytes;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return `${n.toFixed(n < 10 ? 1 : 0)} ${units[i]}`;
+  };
+
+  const acceptFile = (file) => {
+    if (!file || !file.type.startsWith('video/')) return;
+    const blobUrl = URL.createObjectURL(file);
+    setFormData((prev) => {
+      if (prev.clipFile?.blobUrl) URL.revokeObjectURL(prev.clipFile.blobUrl);
+      return { ...prev, clipFile: { name: file.name, size: file.size, type: file.type, blobUrl } };
+    });
+  };
+
+  const handleDragEnter = (e) => {
+    e.preventDefault();
+    dragCounter.current += 1;
+    setDragOver(true);
+  };
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    dragCounter.current -= 1;
+    if (dragCounter.current <= 0) { dragCounter.current = 0; setDragOver(false); }
+  };
+  const handleFileDrop = (e) => {
+    e.preventDefault();
+    dragCounter.current = 0;
+    setDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) acceptFile(file);
+  };
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (file) acceptFile(file);
+    e.target.value = '';
+  };
+  const removeClipFile = () => {
+    if (formData.clipFile?.blobUrl) URL.revokeObjectURL(formData.clipFile.blobUrl);
+    setFormData({ ...formData, clipFile: null });
+  };
+
+  // Close modal, revoking any unsaved blob URL
+  const closeModal = () => {
+    setFormData((prev) => {
+      if (prev.clipFile?.blobUrl) URL.revokeObjectURL(prev.clipFile.blobUrl);
+      return prev;
+    });
+    setSelectedDate(null);
+    setSelectedEntryId(null);
+  };
+
+  // Open a day: edit its latest entry, or start new if empty
+  const openDate = (d) => {
+    const key = formatDateKey(d);
+    const list = entries[key] || [];
+    setSelectedEntryId(list.length ? list[list.length - 1].id : null);
+    setSelectedDate(d);
+  };
+
+  const openEntry = (date, id) => {
+    setSelectedEntryId(id);
+    setSelectedDate(date);
+  };
+
+  const handleSave = async () => {
+    const key = formatDateKey(selectedDate);
+    const hasData = Object.values(formData).some(v => v && (typeof v === 'string' ? v.trim() : true));
+    try {
+      if (hasData) {
+        const toSave = { ...formData };
+        if (toSave.clipFile?.blobUrl) {
+          toSave.clipFile = {
+            name: toSave.clipFile.name,
+            size: toSave.clipFile.size,
+            type: toSave.clipFile.type,
+            _mock: true,
+          };
+        }
+        const dayList = entries[key] || [];
+        let newList;
+        if (selectedEntryId && dayList.some(e => e.id === selectedEntryId)) {
+          newList = dayList.map(e => e.id === selectedEntryId ? { ...toSave, id: selectedEntryId } : e);
+        } else {
+          newList = [...dayList, { ...toSave, id: genId() }];
+        }
+        const newEntries = { ...entries, [key]: newList };
+        await adapter.saveAll({ entries: newEntries, customGames });
+        setEntries(newEntries);
+        if (formData.clipFile?.blobUrl) URL.revokeObjectURL(formData.clipFile.blobUrl);
+      }
+      setSaved(true);
+      setTimeout(() => {
+        setSaved(false);
+        setSelectedDate(null);
+        setSelectedEntryId(null);
+      }, 600);
+    } catch (e) {
+      console.error('Save error:', e);
+    }
+  };
+
+  const handleDelete = async () => {
+    const key = formatDateKey(selectedDate);
+    const dayList = entries[key] || [];
+    const newList = dayList.filter(e => e.id !== selectedEntryId);
+    try {
+      const newEntries = { ...entries };
+      if (newList.length === 0) {
+        delete newEntries[key];
+      } else {
+        newEntries[key] = newList;
+      }
+      await adapter.saveAll({ entries: newEntries, customGames });
+      setEntries(newEntries);
+      closeModal();
+    } catch (e) {
+      console.error('Delete error:', e);
+    }
+  };
+
+  const prevMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
+  const nextMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
+
+  const addCustomGame = async () => {
+    const name = newGameInput.trim();
+    if (!name || allGames.some(g => g.toLowerCase() === name.toLowerCase())) return;
+    const updated = [...customGames, name];
+    setCustomGames(updated);
+    setFormData({ ...formData, game: name });
+    setNewGameInput('');
+    setGameDropdownOpen(false);
+    try {
+      await adapter.saveAll({ entries, customGames: updated });
+    } catch (e) {
+      console.error('Save custom games error:', e);
+    }
+  };
+
+  const handleRatingClick = (value) => {
+    setFormData({ ...formData, rating: formData.rating === value ? value - 0.5 : value });
+  };
+
+  // ── Share ──
+  const buildShareText = (data, date) => {
+    const lines = [];
+    const dateStr = formatDateKey(date);
+    const dow = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][date.getDay()];
+    lines.push(`📅 ${dateStr} (${dow})`);
+    if (data.game || data.rating > 0) {
+      let gl = '🎮';
+      if (data.game) gl += ` ${data.game}`;
+      if (data.rating > 0) gl += `  ★${data.rating.toFixed(1)}/5.0`;
+      lines.push(gl);
+    }
+    const hasMouse = data.mouse || data.dpi || data.sens || data.pollingRate || data.lod;
+    if (hasMouse) {
+      lines.push('');
+      if (data.mouse) lines.push(`🖱 ${data.mouse}`);
+      const s = [];
+      if (data.dpi) s.push(`${data.dpi} DPI`);
+      if (data.sens) s.push(`sens ${data.sens}`);
+      if (data.pollingRate) s.push(`${data.pollingRate}Hz`);
+      if (data.lod) s.push(`LoD ${data.lod}`);
+      if (s.length) lines.push(`  ${s.join(' / ')}`);
+    }
+    if (data.mousepad) lines.push(`🟦 ${data.mousepad}`);
+    const hasKb = data.keyboard || data.kbAp || data.kbRt || data.kbPollingRate;
+    if (hasKb) {
+      lines.push('');
+      if (data.keyboard) lines.push(`⌨ ${data.keyboard}`);
+      const k = [];
+      if (data.kbAp) k.push(`AP ${data.kbAp}`);
+      if (data.kbRt) k.push(`RT ${data.kbRt}`);
+      if (data.kbPollingRate) k.push(`${data.kbPollingRate}Hz`);
+      if (k.length) lines.push(`  ${k.join(' / ')}`);
+    }
+    if (data.memo && data.memo.trim()) {
+      lines.push('');
+      const memo = data.memo.trim();
+      lines.push(memo.length > 100 ? memo.slice(0, 97) + '...' : memo);
+    }
+    lines.push('');
+    lines.push('#SettingsDiary');
+    return lines.join('\n');
+  };
+
+  const shareOnX = () => {
+    const text = buildShareText(formData, selectedDate);
+    const params = new URLSearchParams({ text });
+    if (formData.clipUrl && formData.clipUrl.trim()) params.set('url', formData.clipUrl.trim());
+    window.open(`https://x.com/intent/tweet?${params.toString()}`, '_blank', 'noopener,noreferrer');
+    setShareOpen(false);
+  };
+
+  const copyShareText = async () => {
+    let text = buildShareText(formData, selectedDate);
+    if (formData.clipUrl && formData.clipUrl.trim()) text += `\n${formData.clipUrl.trim()}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      console.error('Copy failed:', e);
+    }
+  };
+
+  // ── Export / Import ──
+  const handleExport = () => {
+    const payload = {
+      app: 'settings-diary',
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      entries,
+      customGames,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `settings-diary-${formatDateKey(new Date()).replace(/-/g, '')}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const handleImportFile = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        if (!data || typeof data.entries !== 'object' || data.entries === null) {
+          setImportNotice({ ok: false, msg: '形式が正しくありません(entries が見つかりません)' });
+          return;
+        }
+        // Normalize: accept v1 (object per day) and v2 (array per day)
+        const normalized = {};
+        let count = 0;
+        for (const [k, v] of Object.entries(data.entries)) {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) continue;
+          const list = (Array.isArray(v) ? v : [v]).filter(Boolean).map(ensureId);
+          if (list.length) { normalized[k] = list; count += list.length; }
+        }
+        if (count === 0) {
+          setImportNotice({ ok: false, msg: 'インポートできるエントリーがありませんでした' });
+          return;
+        }
+        // window.confirm() is unreliable in sandboxed iframes — ask in-app instead
+        setImportNotice(null);
+        setPendingImport({
+          entries: normalized,
+          customGames: Array.isArray(data.customGames) ? data.customGames : null,
+          count,
+        });
+      } catch (err) {
+        setImportNotice({ ok: false, msg: 'JSON の読み込みに失敗しました' });
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const applyImport = async () => {
+    if (!pendingImport) return;
+    const { entries: normalized, customGames: importedGames, count } = pendingImport;
+    try {
+      await adapter.saveAll({ entries: normalized, customGames: importedGames || customGames });
+      if (importedGames) setCustomGames(importedGames);
+    } catch (err) {
+      console.error('Import persist error:', err);
+    }
+    setEntries(normalized);
+    setPendingImport(null);
+    setImportNotice({ ok: true, msg: `${count} 件のエントリーをインポートしました` });
+    setTimeout(() => setImportNotice(null), 4000);
+  };
+
+  const cancelImport = () => setPendingImport(null);
+
+  // ── Derived data ──
+  const days = getDaysInMonth(currentDate);
+  const today = new Date();
+  const isToday = (d) => d && d.toDateString() === today.toDateString();
+  const monthLabel = `${currentDate.getFullYear()}.${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
+  const monthPrefix = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-`;
+  const entryCount = Object.entries(entries)
+    .filter(([k]) => k.startsWith(monthPrefix))
+    .reduce((sum, [, list]) => sum + list.length, 0);
+
+  const weekdays = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+
+  // Flat chronological list (oldest → newest) with per-same-game change detection
+  const flatChrono = [];
+  Object.entries(entries)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .forEach(([k, list]) => list.forEach((entry, idx) => flatChrono.push({ key: k, entry, idx, dayCount: list.length })));
+
+  const changeMap = {};
+  {
+    const lastByGame = {};
+    for (const item of flatChrono) {
+      const gameKey = item.entry.game || '';
+      const prev = lastByGame[gameKey];
+      const changed = new Set();
+      if (prev) {
+        for (const f of SETUP_FIELDS) {
+          const av = (prev.entry[f] || '').toString();
+          const bv = (item.entry[f] || '').toString();
+          if (av !== bv && (av || bv)) changed.add(f);
+        }
+      }
+      changeMap[item.entry.id] = changed;
+      lastByGame[gameKey] = item;
+    }
+  }
+
+  const uniqueGames = [...new Set(flatChrono.map(i => i.entry.game).filter(Boolean))].sort();
+
+  // Device suggestions derived from history (feature: preset dictionary, zero management)
+  const uniqueDevices = (field) => [...new Set(flatChrono.map(i => (i.entry[field] || '').trim()).filter(Boolean))].sort();
+  const mouseSuggestions = uniqueDevices('mouse');
+  const mousepadSuggestions = uniqueDevices('mousepad');
+  const keyboardSuggestions = uniqueDevices('keyboard');
+
+  // Timeline list: newest first, then filtered
+  const q = searchQuery.trim().toLowerCase();
+  const timelineItems = [...flatChrono].reverse().filter(({ entry }) => {
+    if (gameFilter !== 'ALL' && entry.game !== gameFilter) return false;
+    if (q) {
+      const hay = [entry.game, entry.mouse, entry.mousepad, entry.keyboard, entry.memo]
+        .map(v => (v || '').toLowerCase()).join(' ');
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  const totalEntries = flatChrono.length;
+
+  // Value cell for timeline specs — highlights when changed vs previous same-game entry
+  const SpecVal = ({ label, value, changed }) => (
+    <div>
+      <span className="tk-dim">{label} </span>
+      <span className={changed ? 'font-semibold tk-acc' : ''}>{value}</span>
+    </div>
+  );
+
+  const selectedDayList = selectedDate ? (entries[formatDateKey(selectedDate)] || []) : [];
+
+  return (
+    <div data-theme={theme} className="sd-root min-h-screen tk-ink" style={{
+      fontFamily: '"Gen Interface JP","Helvetica Neue","Segoe UI","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif',
+      WebkitFontSmoothing: 'antialiased',
+    }}>
+      <style>{`
+        @import url('https://cdn.jsdelivr.net/npm/gen-interface-jp@0.6.2/cdn/300.css');
+        @import url('https://cdn.jsdelivr.net/npm/gen-interface-jp@0.6.2/cdn/400.css');
+        @import url('https://cdn.jsdelivr.net/npm/gen-interface-jp@0.6.2/cdn/500.css');
+        @import url('https://cdn.jsdelivr.net/npm/gen-interface-jp@0.6.2/cdn/600.css');
+        .sd-root {
+          --paper:#f6f6f4; --card:rgba(255,255,255,.5); --modal:#f6f6f4;
+          --ink:#17171f; --dim:#6e6e68; --faint:#8a8a83;
+          --line:#e2e2de; --line2:#eeeeea;
+          --accent:#4F0C28; --on-accent:#f6f6f4;
+          --peri:#C5D2F8;
+          --peri-soft:rgba(197,210,248,.3); --peri-softer:rgba(197,210,248,.25);
+          --backdrop:rgba(23,23,31,.3);
+          background:var(--paper);
+        }
+        .sd-root[data-theme="dark"] {
+          --paper:#131316; --card:rgba(255,255,255,.03); --modal:#18181c;
+          --ink:#ece9e2; --dim:#8f8f8c; --faint:#73736f;
+          --line:#2a2a2e; --line2:#222226;
+          --accent:#CB87A8; --on-accent:#131316;
+          --peri:#C5D2F8;
+          --peri-soft:rgba(197,210,248,.13); --peri-softer:rgba(197,210,248,.09);
+          --backdrop:rgba(0,0,0,.55);
+        }
+        .sd-label {
+          font-size: 9px; letter-spacing: .28em; color: var(--dim);
+          margin-bottom: 10px; display: flex; align-items: baseline; gap: 8px;
+          text-transform: uppercase; font-weight: 600;
+        }
+        .sd-input {
+          background: transparent;
+          border: 1px solid var(--line);
+          border-radius: 2px;
+          padding: 10px 12px;
+          color: var(--ink);
+          width: 100%;
+          font-size: 13px;
+          font-family: inherit;
+          transition: border-color .15s;
+        }
+        .sd-input:focus { outline: none; border-color: var(--accent); }
+        .sd-input::placeholder { color: var(--faint); }
+        .sd-num { font-variant-numeric: tabular-nums; }
+        .sd-scroll::-webkit-scrollbar { width: 6px; }
+        .sd-scroll::-webkit-scrollbar-track { background: transparent; }
+        .sd-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+        textarea.sd-input { resize: none; }
+        /* var()-based color utilities — Tailwind arbitrary values with var() are
+           unreliable in this renderer, so colors are applied via plain CSS */
+        .tk-ink{color:var(--ink)} .tk-dim{color:var(--dim)} .tk-faint{color:var(--faint)}
+        .tk-acc{color:var(--accent)} .tk-onacc{color:var(--on-accent)} .tk-line{color:var(--line)}
+        .h-ink:hover:not(:disabled){color:var(--ink)}
+        .h-acc:hover:not(:disabled){color:var(--accent)}
+        .h-onacc:hover:not(:disabled){color:var(--on-accent)}
+        .group:hover .gh-ink{color:var(--ink)}
+        .bg-modal{background-color:var(--modal)} .bg-card{background-color:var(--card)}
+        .bg-acc{background-color:var(--accent)} .bg-line{background-color:var(--line)}
+        .bg-perisoft{background-color:var(--peri-soft)} .bg-perisofter{background-color:var(--peri-softer)}
+        .bg-backdrop{background-color:var(--backdrop)}
+        .hbg-perisoft:hover:not(:disabled){background-color:var(--peri-soft)}
+        .hbg-perisofter:hover:not(:disabled){background-color:var(--peri-softer)}
+        .hbg-acc:hover:not(:disabled){background-color:var(--accent)}
+        .hbg-none:hover:not(:disabled){background-color:transparent}
+        .bd-line{border-color:var(--line)} .bd-line2{border-color:var(--line2)}
+        .bd-acc{border-color:var(--accent)} .bd-peri{border-color:var(--peri)} .bd-ink{border-color:var(--ink)}
+        .hbd-line:hover:not(:disabled){border-color:var(--line)}
+        .hbd-acc:hover:not(:disabled){border-color:var(--accent)}
+        .dv-line2 > :not([hidden]) ~ :not([hidden]){border-color:var(--line2)}
+        .fill-acc{fill:var(--accent)}
+        .dec-peri{text-decoration-color:var(--peri)}
+        .hdec-acc:hover{text-decoration-color:var(--accent)}
+        .ring-perisoft{box-shadow:0 0 0 2px var(--peri-soft)}
+        .sd-tbtn {
+          font-size: 9px; letter-spacing: .16em; text-transform: uppercase;
+          border: 1px solid var(--line); border-radius: 2px;
+          color: var(--dim); background: transparent;
+          padding: 8px 13px; cursor: pointer; transition: .15s;
+          display: inline-flex; align-items: center; gap: 7px;
+          font-family: inherit;
+        }
+        .sd-tbtn:hover { color: var(--accent); border-color: var(--accent); }
+        .sd-tbtn.on { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+      `}</style>
+
+      <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8 sm:py-12">
+        {/* Header */}
+        <header className="mb-10 flex items-end justify-between flex-wrap gap-6">
+          <div>
+            <h1 className="text-[11px] font-semibold uppercase flex items-center gap-2.5" style={{ letterSpacing: '.34em' }}>
+              <span className="w-2 h-2 bg-acc inline-block" />
+              Settings Diary
+            </h1>
+            <p className="text-[10px] tk-dim uppercase mt-1.5" style={{ letterSpacing: '.22em' }}>
+              Device &amp; Sens Log
+            </p>
+          </div>
+          <div className="text-right">
+            <div className="sd-num text-[34px] font-light leading-none tracking-[.02em]">
+              {monthLabel}
+              <small className="text-[15px] font-normal tk-dim ml-2" style={{ letterSpacing: '.06em' }}>
+                {entryCount} {entryCount === 1 ? 'entry' : 'entries'}
+              </small>
+            </div>
+            <div className="text-[11px] tk-dim mt-1.5" style={{ letterSpacing: '.12em' }}>
+              TODAY {formatDateKey(today)}
+            </div>
+          </div>
+        </header>
+
+        {/* Toolbar: tabs + data/theme controls */}
+        <div className="mb-5 flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex gap-2">
+            {[
+              { id: 'calendar', label: 'Calendar' },
+              { id: 'timeline', label: 'Timeline' },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setView(tab.id)}
+                className={`sd-tbtn ${view === tab.id ? 'on' : ''}`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2 items-center">
+            <button onClick={handleExport} className="sd-tbtn" title="JSONとしてダウンロード">
+              <Download className="w-3 h-3" strokeWidth={1.5} /> Export
+            </button>
+            <button onClick={() => importInputRef.current?.click()} className="sd-tbtn" title="JSONから読み込み">
+              <Upload className="w-3 h-3" strokeWidth={1.5} /> Import
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept="application/json,.json"
+              onChange={handleImportFile}
+              className="hidden"
+            />
+            <button onClick={toggleTheme} className="sd-tbtn" title="テーマ切替">
+              {theme === 'light'
+                ? <Moon className="w-3 h-3" strokeWidth={1.5} />
+                : <Sun className="w-3 h-3" strokeWidth={1.5} />}
+              {theme === 'light' ? 'Dark' : 'Light'}
+            </button>
+            {isSignedIn ? (
+              <>
+                <span
+                  className="text-[9px] uppercase tk-dim flex items-center gap-1.5 px-2"
+                  style={{ letterSpacing: '.16em' }}
+                >
+                  {syncStatus === 'offline' || syncStatus === 'error'
+                    ? <CloudOff className="w-3 h-3" strokeWidth={1.5} />
+                    : <Cloud className="w-3 h-3 tk-acc" strokeWidth={1.5} />}
+                  {SYNC_LABELS[syncStatus] || syncStatus}
+                </span>
+                <button onClick={() => setLogoutConfirm(true)} className="sd-tbtn" title="Google からログアウト">
+                  <LogOut className="w-3 h-3" strokeWidth={1.5} /> Logout
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={handleLogin}
+                disabled={authBusy}
+                className="sd-tbtn"
+                title="未ログインでもローカルモードで全機能を使用できます"
+              >
+                <LogIn className="w-3 h-3" strokeWidth={1.5} /> {authBusy ? '接続中…' : 'Google でログイン'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Drive re-login hint (token is memory-only, so each visit needs a click) */}
+        {syncHint && !isSignedIn && (
+          <div className="mb-5 border bd-peri rounded-[2px] px-4 py-3 flex items-center gap-3 flex-wrap bg-perisoft">
+            <Cloud className="w-4 h-4 tk-acc shrink-0" strokeWidth={1.5} />
+            <div className="text-[12px] flex-1 min-w-[200px]">
+              前回 Google Drive 同期を使用していました。ログインすると同期を再開します。
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setSyncHint(false)} className="sd-tbtn">あとで</button>
+              <button onClick={handleLogin} disabled={authBusy} className="sd-tbtn on">
+                <LogIn className="w-3 h-3" strokeWidth={1.5} /> ログイン
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Logout confirmation: keep or wipe the local cache (spec §4-5) */}
+        {logoutConfirm && (
+          <div className="mb-5 border bd-acc rounded-[2px] px-4 py-3.5 flex items-center gap-3 flex-wrap bg-perisofter">
+            <AlertCircle className="w-4 h-4 tk-acc shrink-0" strokeWidth={1.5} />
+            <div className="text-[12px] flex-1 min-w-[200px]">
+              Google からログアウトします。このブラウザのデータはどうしますか?
+              <span className="tk-dim">(Drive 上の data.json はどちらの場合も残ります)</span>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setLogoutConfirm(false)} className="sd-tbtn">キャンセル</button>
+              <button onClick={() => confirmLogout(true)} className="sd-tbtn">残してログアウト</button>
+              <button onClick={() => confirmLogout(false)} className="sd-tbtn on">削除してログアウト</button>
+            </div>
+          </div>
+        )}
+
+        {/* Pending import confirmation */}
+        {pendingImport && (
+          <div className="mb-5 border bd-acc rounded-[2px] px-4 py-3.5 flex items-center gap-3 flex-wrap bg-perisofter">
+            <AlertCircle className="w-4 h-4 tk-acc shrink-0" strokeWidth={1.5} />
+            <div className="text-[12px] flex-1 min-w-[200px]">
+              <span className="sd-num font-semibold">{pendingImport.count} 件</span>のエントリーをインポートします。
+              <span className="tk-acc font-medium">現在のデータはすべて置き換えられます。</span>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={cancelImport} className="sd-tbtn">
+                キャンセル
+              </button>
+              <button onClick={applyImport} className="sd-tbtn on">
+                置き換えて続行
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Import notice */}
+        {importNotice && (
+          <div className={`mb-5 border rounded-[2px] px-3.5 py-2.5 text-[11px] flex items-center gap-2 ${
+            importNotice.ok
+              ? 'bd-peri bg-perisoft tk-ink'
+              : 'bd-acc tk-acc'
+          }`}>
+            {importNotice.ok ? <Check className="w-3.5 h-3.5" strokeWidth={1.5} /> : <AlertCircle className="w-3.5 h-3.5" strokeWidth={1.5} />}
+            {importNotice.msg}
+            <button onClick={() => setImportNotice(null)} className="ml-auto tk-dim h-ink">
+              <X className="w-3 h-3" strokeWidth={1.5} />
+            </button>
+          </div>
+        )}
+
+        {/* ── Calendar ── */}
+        {view === 'calendar' && (
+        <div className="border bd-line rounded-[2px] bg-card">
+          <div className="flex items-center justify-between px-6 py-5 border-b bd-line">
+            <button
+              onClick={prevMonth}
+              className="p-2 border border-transparent rounded-[2px] tk-dim h-ink hbd-line transition"
+            >
+              <ChevronLeft className="w-4 h-4" strokeWidth={1.5} />
+            </button>
+            <div className="text-center">
+              <div className="sd-num text-2xl font-light tracking-[.04em]">{monthLabel}</div>
+              <div className="text-[9px] tk-dim uppercase mt-1" style={{ letterSpacing: '.28em' }}>
+                {currentDate.toLocaleString('en-US', { month: 'long' })}
+              </div>
+            </div>
+            <button
+              onClick={nextMonth}
+              className="p-2 border border-transparent rounded-[2px] tk-dim h-ink hbd-line transition"
+            >
+              <ChevronRight className="w-4 h-4" strokeWidth={1.5} />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-7 border-b bd-line">
+            {weekdays.map((d) => (
+              <div key={d} className="py-3 text-center text-[9px] tk-dim uppercase" style={{ letterSpacing: '.22em' }}>
+                {d}
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-7">
+            {days.map((d, i) => {
+              if (!d) return <div key={i} className="aspect-square border-r border-b bd-line2 last:border-r-0" />;
+              const key = formatDateKey(d);
+              const dayList = entries[key] || [];
+              const latest = dayList[dayList.length - 1];
+              return (
+                <button
+                  key={i}
+                  onClick={() => openDate(d)}
+                  className={`aspect-square border-r border-b bd-line2 p-2 sm:p-3 text-left relative group transition hbg-perisofter ${(i + 1) % 7 === 0 ? 'border-r-0' : ''}`}
+                >
+                  <div className="flex items-start justify-between">
+                    <span className={`sd-num text-sm sm:text-base ${
+                      isToday(d)
+                        ? 'font-semibold tk-acc'
+                        : 'font-light tk-dim gh-ink'
+                    }`}>
+                      {String(d.getDate()).padStart(2, '0')}
+                    </span>
+                    {isToday(d) && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-acc mt-1.5" />
+                    )}
+                  </div>
+                  {latest && (
+                    <div className="absolute bottom-2 left-2 right-2 space-y-0.5">
+                      {latest.game && (
+                        <div className="text-[9px] sm:text-[10px] tk-acc font-medium truncate">
+                          {latest.game}{dayList.length > 1 && <span className="tk-dim sd-num"> +{dayList.length - 1}</span>}
+                        </div>
+                      )}
+                      {!latest.game && dayList.length > 1 && (
+                        <div className="sd-num text-[9px] tk-dim">{dayList.length} entries</div>
+                      )}
+                      {latest.rating > 0 && (
+                        <div className="sd-num text-[9px] tk-dim hidden sm:flex items-center gap-1">
+                          <Star className="w-2 h-2 fill-acc tk-acc" strokeWidth={0} />
+                          {latest.rating.toFixed(1)}
+                        </div>
+                      )}
+                      {latest.sens && !latest.rating && (
+                        <div className="sd-num text-[9px] tk-dim truncate hidden sm:block">
+                          sens {latest.sens}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        )}
+
+        {/* ── Timeline ── */}
+        {view === 'timeline' && (
+        <div className="border bd-line rounded-[2px] bg-card">
+          <div className="px-6 py-5 border-b bd-line">
+            <div className="flex items-end justify-between flex-wrap gap-3">
+              <div>
+                <div className="text-[9px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.28em' }}>Timeline</div>
+                <div className="sd-num text-2xl font-light">
+                  {timelineItems.length}
+                  {timelineItems.length !== totalEntries && (
+                    <span className="tk-dim text-base font-normal"> / {totalEntries}</span>
+                  )}
+                  <span className="tk-dim text-sm font-normal ml-1.5">{totalEntries === 1 ? 'entry' : 'entries'}</span>
+                </div>
+              </div>
+              <div className="text-[9px] tk-dim uppercase text-right" style={{ letterSpacing: '.18em' }}>
+                Newest first<br/>
+                <span style={{ letterSpacing: '.06em' }} className="normal-case tk-acc font-medium">色付きの値 = 前回(同ゲーム)から変更</span>
+              </div>
+            </div>
+
+            {/* Filters */}
+            {totalEntries > 0 && (
+              <div className="mt-4 flex items-center gap-3 flex-wrap">
+                <div className="flex gap-1.5 flex-wrap">
+                  {['ALL', ...uniqueGames].map(g => (
+                    <button
+                      key={g}
+                      onClick={() => setGameFilter(g)}
+                      className={`text-[10px] border rounded-[2px] px-2.5 py-1.5 transition ${
+                        gameFilter === g
+                          ? 'bg-acc tk-onacc bd-acc'
+                          : 'bd-line tk-dim h-acc hbd-acc'
+                      }`}
+                      style={{ letterSpacing: '.05em' }}
+                    >
+                      {g === 'ALL' ? 'すべて' : g}
+                    </button>
+                  ))}
+                </div>
+                <div className="relative ml-auto">
+                  <Search className="w-3.5 h-3.5 tk-faint absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" strokeWidth={1.5} />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="メモ・デバイス名で検索"
+                    className="sd-input !w-52 !py-1.5 !pl-8 !pr-2.5 !text-xs"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {timelineItems.length === 0 ? (
+            <div className="p-16 sm:p-24 text-center">
+              <div className="text-[11px] tk-dim mb-5" style={{ letterSpacing: '.1em' }}>
+                {totalEntries === 0 ? 'まだ記録がありません' : '条件に一致する記録がありません'}
+              </div>
+              {totalEntries === 0 ? (
+                <button
+                  onClick={() => { setView('calendar'); openDate(new Date()); }}
+                  className="sd-tbtn"
+                >
+                  Start logging
+                </button>
+              ) : (
+                <button
+                  onClick={() => { setGameFilter('ALL'); setSearchQuery(''); }}
+                  className="sd-tbtn"
+                >
+                  フィルタをクリア
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="p-4 sm:p-8">
+              {timelineItems.map(({ key, entry, idx, dayCount }, i) => {
+                const [y, m, d] = key.split('-').map(Number);
+                const date = new Date(y, m - 1, d);
+                const isLast = i === timelineItems.length - 1;
+                const ch = changeMap[entry.id] || new Set();
+                return (
+                  <div key={entry.id} className="flex gap-4 sm:gap-7">
+                    {/* Date column */}
+                    <div className="flex flex-col items-end pt-1 shrink-0 w-14 sm:w-24">
+                      <div className="sd-num text-[10px] tk-dim hidden sm:block">{y}</div>
+                      <div className="sd-num text-xl sm:text-2xl font-light leading-tight">
+                        {String(m).padStart(2, '0')}<span className="tk-faint">.</span>{String(d).padStart(2, '0')}
+                      </div>
+                      <div className="text-[8px] tk-dim uppercase mt-0.5" style={{ letterSpacing: '.2em' }}>
+                        {['SUN','MON','TUE','WED','THU','FRI','SAT'][date.getDay()]}
+                        {dayCount > 1 && <span className="sd-num ml-1 normal-case">#{idx + 1}</span>}
+                      </div>
+                    </div>
+
+                    {/* Timeline rail */}
+                    <div className="flex flex-col items-center shrink-0 pt-2.5">
+                      <div className={`w-1.5 h-1.5 rounded-full ${ch.size > 0 ? 'bg-acc ring-perisoft' : 'bg-acc'}`} />
+                      {!isLast && <div className="w-px flex-1 bg-line mt-2" />}
+                    </div>
+
+                    {/* Content card */}
+                    <button
+                      onClick={() => openEntry(date, entry.id)}
+                      className={`flex-1 text-left border bd-line rounded-[2px] hbd-acc bg-card p-4 sm:p-5 transition group ${isLast ? 'mb-2' : 'mb-5'}`}
+                    >
+                      <div className="flex items-start justify-between gap-3 mb-2.5">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          {entry.game && (
+                            <div className="text-[15px] font-semibold truncate">
+                              {entry.game}
+                            </div>
+                          )}
+                          {ch.size > 0 && (
+                            <span className="text-[8px] uppercase tk-acc border bd-acc rounded-[2px] px-1.5 py-0.5 shrink-0 font-semibold" style={{ letterSpacing: '.14em' }}>
+                              {ch.size} changed
+                            </span>
+                          )}
+                        </div>
+                        {entry.rating > 0 && (
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <Star className="w-3 h-3 fill-acc tk-acc" strokeWidth={0} />
+                            <span className="sd-num text-sm font-medium tk-acc">{entry.rating.toFixed(1)}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {(entry.dpi || entry.sens || entry.pollingRate || entry.lod) && (
+                        <div className="sd-num flex flex-wrap gap-x-5 gap-y-1 mb-2.5 text-[11px]">
+                          {entry.dpi && <SpecVal label="DPI" value={entry.dpi} changed={ch.has('dpi')} />}
+                          {entry.sens && <SpecVal label="SENS" value={entry.sens} changed={ch.has('sens')} />}
+                          {entry.pollingRate && <SpecVal label="POLL" value={entry.pollingRate} changed={ch.has('pollingRate')} />}
+                          {entry.lod && <SpecVal label="LoD" value={entry.lod} changed={ch.has('lod')} />}
+                        </div>
+                      )}
+
+                      {(entry.kbAp || entry.kbRt || entry.kbPollingRate) && (
+                        <div className="sd-num flex flex-wrap gap-x-5 gap-y-1 mb-2.5 text-[11px]">
+                          {entry.kbAp && <SpecVal label="AP" value={entry.kbAp} changed={ch.has('kbAp')} />}
+                          {entry.kbRt && <SpecVal label="RT" value={entry.kbRt} changed={ch.has('kbRt')} />}
+                          {entry.kbPollingRate && <SpecVal label="KB POLL" value={entry.kbPollingRate} changed={ch.has('kbPollingRate')} />}
+                        </div>
+                      )}
+
+                      {(entry.mouse || entry.mousepad || entry.keyboard) && (
+                        <div className="flex flex-wrap gap-1.5 mb-2">
+                          {entry.mouse && (
+                            <span className={`text-[10px] border rounded-[2px] px-2 py-1 ${ch.has('mouse') ? 'bd-acc tk-acc font-medium' : 'bd-line tk-ink'}`}>
+                              <span className="tk-dim">M </span>{entry.mouse}
+                            </span>
+                          )}
+                          {entry.mousepad && (
+                            <span className={`text-[10px] border rounded-[2px] px-2 py-1 ${ch.has('mousepad') ? 'bd-acc tk-acc font-medium' : 'bd-line tk-ink'}`}>
+                              <span className="tk-dim">P </span>{entry.mousepad}
+                            </span>
+                          )}
+                          {entry.keyboard && (
+                            <span className={`text-[10px] border rounded-[2px] px-2 py-1 ${ch.has('keyboard') ? 'bd-acc tk-acc font-medium' : 'bd-line tk-ink'}`}>
+                              <span className="tk-dim">K </span>{entry.keyboard}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      {entry.memo && (
+                        <p className="text-xs tk-dim mt-2.5 leading-relaxed line-clamp-3 whitespace-pre-wrap">
+                          {entry.memo}
+                        </p>
+                      )}
+
+                      {entry.clipFile && (
+                        <div className="text-[10px] tk-ink mt-3 flex items-center gap-1.5">
+                          <Film className="w-3 h-3 tk-dim" strokeWidth={1.5} /> {entry.clipFile.name}
+                          <span className="sd-num tk-dim">· {formatBytes(entry.clipFile.size)}</span>
+                        </div>
+                      )}
+
+                      {entry.clipUrl && (
+                        <a
+                          href={entry.clipUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-[10px] tk-acc underline underline-offset-2 dec-peri hdec-acc mt-3 inline-block transition"
+                        >
+                          クリップを開く ↗
+                        </a>
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        )}
+
+        {/* Footer note */}
+        <div className="mt-5 text-[9px] tk-faint uppercase flex justify-between flex-wrap gap-2" style={{ letterSpacing: '.18em' }}>
+          <span>{isSignedIn ? '日付を選択して記録 — Google Drive と同期' : '日付を選択して記録 — ローカル保存(ログインなしで全機能利用可)'}</span>
+          <span>{isSignedIn ? 'Drive sync' : 'Local mode'}</span>
+        </div>
+      </div>
+
+      {/* ── Entry Modal ── */}
+      {selectedDate && (
+        <div
+          className="fixed inset-0 bg-backdrop backdrop-blur-[2px] flex items-end sm:items-center justify-center z-50 p-0 sm:p-6"
+          onClick={closeModal}
+        >
+          <div
+            className="bg-modal border bd-line rounded-[2px] w-full sm:max-w-2xl max-h-[90vh] overflow-y-auto sd-scroll relative shadow-2xl shadow-black/10"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal header */}
+            <div className="sticky top-0 bg-modal border-b bd-line px-6 py-5 z-10">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-[9px] tk-acc uppercase mb-1.5 font-semibold" style={{ letterSpacing: '.28em' }}>Log entry</div>
+                  <div className="sd-num text-2xl font-light">{formatDateKey(selectedDate)}</div>
+                  <div className="text-[11px] tk-dim mt-0.5">
+                    {selectedDate.toLocaleDateString('ja-JP', { weekday: 'long' })}
+                  </div>
+                </div>
+                <button
+                  onClick={closeModal}
+                  className="p-2 tk-dim h-ink border border-transparent hbd-line rounded-[2px] transition"
+                >
+                  <X className="w-4 h-4" strokeWidth={1.5} />
+                </button>
+              </div>
+
+              {/* Multi-entry chips */}
+              {selectedDayList.length > 0 && (
+                <div className="flex gap-1.5 mt-3.5 flex-wrap">
+                  {selectedDayList.map((e, idx) => (
+                    <button
+                      key={e.id}
+                      onClick={() => setSelectedEntryId(e.id)}
+                      className={`sd-num text-[10px] border rounded-[2px] px-2.5 py-1.5 transition ${
+                        selectedEntryId === e.id
+                          ? 'bg-acc tk-onacc bd-acc'
+                          : 'bd-line tk-dim hbd-acc h-acc'
+                      }`}
+                    >
+                      #{idx + 1}{e.game ? ` ${e.game}` : ''}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setSelectedEntryId(null)}
+                    className={`text-[10px] border rounded-[2px] px-2.5 py-1.5 transition flex items-center gap-1 ${
+                      selectedEntryId === null
+                        ? 'bg-acc tk-onacc bd-acc'
+                        : 'bd-line tk-dim hbd-acc h-acc'
+                    }`}
+                  >
+                    <Plus className="w-3 h-3" strokeWidth={1.5} /> New
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Form */}
+            <div className="px-6 py-6 space-y-7">
+              {/* Carry-over banner */}
+              {prefilledFrom && (
+                <div className="border bd-peri rounded-[2px] bg-perisoft px-3.5 py-2.5 flex items-center justify-between gap-3">
+                  <div className="flex items-baseline gap-2.5 min-w-0">
+                    <span className="text-[9px] uppercase font-semibold tk-acc shrink-0" style={{ letterSpacing: '.18em' }}>前回から引き継ぎ</span>
+                    <span className="sd-num text-[11px] tk-ink truncate">
+                      {prefilledFrom}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={clearPrefilled}
+                    className="text-[9px] uppercase tk-dim h-acc shrink-0 transition"
+                    style={{ letterSpacing: '.14em' }}
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+
+              {/* 01 — Game */}
+              <div className="relative">
+                <label className="sd-label">01 — Game</label>
+                <button
+                  type="button"
+                  onClick={() => setGameDropdownOpen(!gameDropdownOpen)}
+                  className="sd-input flex items-center justify-between text-left"
+                >
+                  <span className={formData.game ? 'font-medium' : 'tk-faint'}>
+                    {formData.game || 'ゲームを選択...'}
+                  </span>
+                  <ChevronDown className={`w-4 h-4 tk-dim transition ${gameDropdownOpen ? 'rotate-180' : ''}`} strokeWidth={1.5} />
+                </button>
+                {gameDropdownOpen && (
+                  <div className="absolute top-full left-0 right-0 mt-1 border bd-line rounded-[2px] bg-modal max-h-64 overflow-y-auto sd-scroll z-30 shadow-lg shadow-black/10">
+                    <div className="text-[8px] tk-dim uppercase px-3.5 py-2 border-b bd-line" style={{ letterSpacing: '.28em' }}>Presets</div>
+                    {PRESET_GAMES.map(g => (
+                      <button
+                        key={g}
+                        type="button"
+                        onClick={() => { setFormData({ ...formData, game: g }); setGameDropdownOpen(false); }}
+                        className={`w-full text-left px-3.5 py-2 text-[12px] border-b bd-line2 last:border-b-0 hbg-perisoft transition ${formData.game === g ? 'font-semibold tk-acc' : 'tk-dim'}`}
+                      >
+                        {g}
+                      </button>
+                    ))}
+                    {customGames.length > 0 && (
+                      <>
+                        <div className="text-[8px] tk-dim uppercase px-3.5 py-2 border-t border-b bd-line" style={{ letterSpacing: '.28em' }}>Custom</div>
+                        {customGames.map(g => (
+                          <button
+                            key={g}
+                            type="button"
+                            onClick={() => { setFormData({ ...formData, game: g }); setGameDropdownOpen(false); }}
+                            className={`w-full text-left px-3.5 py-2 text-[12px] border-b bd-line2 last:border-b-0 hbg-perisoft transition ${formData.game === g ? 'font-semibold tk-acc' : 'tk-dim'}`}
+                          >
+                            {g}
+                          </button>
+                        ))}
+                      </>
+                    )}
+                    <div className="border-t bd-line p-2 flex gap-1.5">
+                      <input
+                        type="text"
+                        value={newGameInput}
+                        onChange={(e) => setNewGameInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomGame(); } }}
+                        placeholder="新しいゲームを追加..."
+                        className="sd-input flex-1 !py-1.5 !px-2.5 text-xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={addCustomGame}
+                        className="px-3.5 py-1.5 text-[9px] uppercase border bd-line rounded-[2px] tk-dim h-onacc hbg-acc hbd-acc transition flex items-center gap-1"
+                        style={{ letterSpacing: '.14em' }}
+                      >
+                        <Plus className="w-3 h-3" strokeWidth={1.5} /> Add
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 02 — Rating */}
+              <div>
+                <label className="sd-label">
+                  02 — Rating
+                  <span className="ml-auto normal-case font-normal" style={{ letterSpacing: '.04em' }}>星の左右で 0.5 刻み</span>
+                </label>
+                <div className="flex items-center gap-4">
+                  <div className="flex gap-1">
+                    {[1, 2, 3, 4, 5].map(i => {
+                      const v = formData.rating || 0;
+                      const full = v >= i;
+                      const half = v >= i - 0.5 && v < i;
+                      return (
+                        <div key={i} className="relative w-8 h-8">
+                          <button
+                            type="button"
+                            onClick={() => handleRatingClick(i - 0.5)}
+                            className="absolute left-0 top-0 w-1/2 h-full z-10 hbg-perisoft rounded-l-[2px]"
+                            aria-label={`${i - 0.5} stars`}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleRatingClick(i)}
+                            className="absolute right-0 top-0 w-1/2 h-full z-10 hbg-perisoft rounded-r-[2px]"
+                            aria-label={`${i} stars`}
+                          />
+                          <Star className="absolute inset-0 w-8 h-8 tk-line" strokeWidth={1} />
+                          {full && (
+                            <Star className="absolute inset-0 w-8 h-8 tk-acc fill-acc" strokeWidth={1} />
+                          )}
+                          {half && (
+                            <div className="absolute inset-0 overflow-hidden pointer-events-none" style={{ width: '50%' }}>
+                              <Star className="w-8 h-8 tk-acc fill-acc" strokeWidth={1} />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="sd-num text-[26px] font-light tk-acc">
+                    {(formData.rating || 0).toFixed(1)}
+                    <span className="text-[13px] tk-dim ml-1">/5.0</span>
+                  </div>
+                  {formData.rating > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, rating: 0 })}
+                      className="text-[9px] uppercase tk-faint h-acc ml-auto transition"
+                      style={{ letterSpacing: '.14em' }}
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* 03 — Mouse */}
+              <div>
+                <label className="sd-label">03 — Mouse</label>
+                <div className="border bd-line rounded-[2px] divide-y dv-line2">
+                  <div className="p-3.5">
+                    <input
+                      type="text"
+                      list="dl-mouse"
+                      className="sd-input !border-0 !p-0 !text-[13px]"
+                      placeholder="マウス名(例: Logitech G PRO X SUPERLIGHT 2)"
+                      value={formData.mouse}
+                      onChange={(e) => setFormData({ ...formData, mouse: e.target.value })}
+                    />
+                    <datalist id="dl-mouse">
+                      {mouseSuggestions.map(s => <option key={s} value={s} />)}
+                    </datalist>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 divide-x dv-line2">
+                    {[
+                      { key: 'dpi', label: 'DPI', ph: '800' },
+                      { key: 'sens', label: 'Sens', ph: '0.40' },
+                      { key: 'pollingRate', label: 'Polling Hz', ph: '1000' },
+                      { key: 'lod', label: 'LoD mm', ph: '1' },
+                    ].map(f => (
+                      <div key={f.key} className="p-3">
+                        <div className="text-[8px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.2em' }}>{f.label}</div>
+                        <input
+                          type="text"
+                          className="sd-input sd-num !border-0 !p-0 !text-[14px]"
+                          placeholder={f.ph}
+                          value={formData[f.key]}
+                          onChange={(e) => setFormData({ ...formData, [f.key]: e.target.value })}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* 04 — Mousepad */}
+              <div>
+                <label className="sd-label">04 — Mousepad</label>
+                <input
+                  type="text"
+                  list="dl-mousepad"
+                  className="sd-input"
+                  placeholder="マウスパッド名(例: Artisan Zero XSOFT)"
+                  value={formData.mousepad}
+                  onChange={(e) => setFormData({ ...formData, mousepad: e.target.value })}
+                />
+                <datalist id="dl-mousepad">
+                  {mousepadSuggestions.map(s => <option key={s} value={s} />)}
+                </datalist>
+              </div>
+
+              {/* 05 — Keyboard */}
+              <div>
+                <label className="sd-label">05 — Keyboard</label>
+                <div className="border bd-line rounded-[2px] divide-y dv-line2">
+                  <div className="p-3.5">
+                    <input
+                      type="text"
+                      list="dl-keyboard"
+                      className="sd-input !border-0 !p-0 !text-[13px]"
+                      placeholder="キーボード名(例: Wooting 60HE)"
+                      value={formData.keyboard}
+                      onChange={(e) => setFormData({ ...formData, keyboard: e.target.value })}
+                    />
+                    <datalist id="dl-keyboard">
+                      {keyboardSuggestions.map(s => <option key={s} value={s} />)}
+                    </datalist>
+                  </div>
+                  <div className="grid grid-cols-3 divide-x dv-line2">
+                    {[
+                      { key: 'kbAp', label: 'AP mm', ph: '1.5' },
+                      { key: 'kbRt', label: 'RT mm', ph: '0.1' },
+                      { key: 'kbPollingRate', label: 'Polling Hz', ph: '1000' },
+                    ].map(f => (
+                      <div key={f.key} className="p-3">
+                        <div className="text-[8px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.2em' }}>{f.label}</div>
+                        <input
+                          type="text"
+                          className="sd-input sd-num !border-0 !p-0 !text-[14px]"
+                          placeholder={f.ph}
+                          value={formData[f.key]}
+                          onChange={(e) => setFormData({ ...formData, [f.key]: e.target.value })}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* 06 — Memo */}
+              <div>
+                <label className="sd-label">06 — Memo</label>
+                <textarea
+                  className="sd-input"
+                  rows={4}
+                  placeholder="今日の調子、感じたこと、調整した設定など..."
+                  value={formData.memo}
+                  onChange={(e) => setFormData({ ...formData, memo: e.target.value })}
+                />
+              </div>
+
+              {/* 07 — Clip */}
+              <div>
+                <label className="sd-label">07 — Clip</label>
+
+                {!formData.clipFile && (
+                  <>
+                    <div
+                      onDragEnter={handleDragEnter}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDragLeave={handleDragLeave}
+                      onDrop={handleFileDrop}
+                      onClick={() => fileInputRef.current?.click()}
+                      className={`border border-dashed rounded-[2px] p-7 text-center transition cursor-pointer ${
+                        dragOver
+                          ? 'bd-acc bg-perisofter'
+                          : 'bd-line hbd-acc'
+                      }`}
+                    >
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="video/*"
+                        onChange={handleFileSelect}
+                        className="hidden"
+                      />
+                      <Upload className={`w-6 h-6 mx-auto mb-2.5 ${dragOver ? 'tk-acc' : 'tk-faint'}`} strokeWidth={1.2} />
+                      <div className={`text-[10px] uppercase ${dragOver ? 'tk-acc' : 'tk-dim'}`} style={{ letterSpacing: '.22em' }}>
+                        {dragOver ? 'ここにドロップ' : '動画をドラッグ'}
+                      </div>
+                      <div className="text-[9px] tk-faint mt-1.5" style={{ letterSpacing: '.1em' }}>
+                        またはタップして選択
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 my-3.5">
+                      <div className="flex-1 h-px bg-line" />
+                      <span className="text-[8px] tk-faint uppercase" style={{ letterSpacing: '.24em' }}>or paste URL</span>
+                      <div className="flex-1 h-px bg-line" />
+                    </div>
+                    <input
+                      type="url"
+                      className="sd-input sd-num !text-xs"
+                      placeholder="https://youtu.be/... or medal.tv/..."
+                      value={formData.clipUrl}
+                      onChange={(e) => setFormData({ ...formData, clipUrl: e.target.value })}
+                    />
+                    {formData.clipUrl && (
+                      <a href={formData.clipUrl} target="_blank" rel="noopener noreferrer"
+                        className="text-[10px] tk-acc underline underline-offset-2 dec-peri hdec-acc mt-2 inline-block transition">
+                        クリップを開く ↗
+                      </a>
+                    )}
+                  </>
+                )}
+
+                {formData.clipFile && (
+                  <div className="border bd-line rounded-[2px] overflow-hidden">
+                    {formData.clipFile.blobUrl ? (
+                      <video
+                        src={formData.clipFile.blobUrl}
+                        controls
+                        className="w-full max-h-72 bg-black"
+                      />
+                    ) : (
+                      <div className="aspect-video bg-perisofter flex items-center justify-center flex-col gap-2.5 p-4">
+                        <Film className="w-7 h-7 tk-faint" strokeWidth={1.2} />
+                        <div className="text-[9px] tk-dim text-center leading-relaxed" style={{ letterSpacing: '.08em' }}>
+                          保存済みクリップ情報<br/>
+                          <span className="tk-faint">(モックではプレビュー不可 — 本番では Drive からストリーミング)</span>
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between p-3.5 border-t bd-line gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-medium truncate flex items-center gap-2">
+                          <Film className="w-3 h-3 tk-dim shrink-0" strokeWidth={1.5} />
+                          {formData.clipFile.name}
+                        </div>
+                        <div className="sd-num text-[10px] tk-dim mt-0.5">
+                          {formatBytes(formData.clipFile.size)} · {formData.clipFile.type || 'video'}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={removeClipFile}
+                        className="text-[9px] uppercase tk-dim h-acc transition px-2"
+                        style={{ letterSpacing: '.14em' }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {formData.clipFile && formData.clipFile.blobUrl && (
+                  <div className="mt-2.5 flex items-start gap-1.5 text-[9px] tk-faint leading-relaxed" style={{ letterSpacing: '.04em' }}>
+                    <AlertCircle className="w-3 h-3 mt-px shrink-0" strokeWidth={1.5} />
+                    <span>このモックではファイル本体は保存されません。本番版ではここで Google Drive へアップロードされます。</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Action bar */}
+            <div className="sticky bottom-0 bg-modal border-t bd-line px-6 py-4 flex items-center justify-between gap-3">
+              {selectedEntryId && selectedDayList.some(e => e.id === selectedEntryId) ? (
+                <button
+                  onClick={handleDelete}
+                  className="px-4 py-2.5 text-[9px] uppercase border bd-line rounded-[2px] tk-dim h-acc hbd-acc transition flex items-center gap-2"
+                  style={{ letterSpacing: '.16em' }}
+                >
+                  <Trash2 className="w-3.5 h-3.5" strokeWidth={1.5} /> Delete
+                </button>
+              ) : <div />}
+
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <button
+                    onClick={() => setShareOpen(!shareOpen)}
+                    disabled={!(formData.game || formData.mouse || formData.mousepad || formData.keyboard || formData.dpi || formData.sens)}
+                    className="px-4 py-2.5 text-[9px] uppercase border bd-line rounded-[2px] tk-dim h-acc hbd-acc transition flex items-center gap-2 disabled:opacity-30 disabled:cursor-not-allowed"
+                    style={{ letterSpacing: '.16em' }}
+                  >
+                    <Share2 className="w-3.5 h-3.5" strokeWidth={1.5} /> Share
+                  </button>
+                  {shareOpen && (
+                    <>
+                      <div className="fixed inset-0 z-30" onClick={() => setShareOpen(false)} />
+                      <div className="absolute bottom-full right-0 mb-2 border bd-line rounded-[2px] bg-modal shadow-xl shadow-black/10 z-40 min-w-[190px]">
+                        <div className="text-[8px] tk-dim uppercase px-3.5 py-2 border-b bd-line" style={{ letterSpacing: '.28em' }}>Share to</div>
+                        <button
+                          onClick={shareOnX}
+                          className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left"
+                        >
+                          <span className="w-5 h-5 flex items-center justify-center border bd-ink rounded-[2px] text-[10px] font-bold">𝕏</span>
+                          <span>Post on X</span>
+                        </button>
+                        <button
+                          onClick={copyShareText}
+                          className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2"
+                        >
+                          {copied ? (
+                            <>
+                              <Check className="w-4 h-4" strokeWidth={1.5} />
+                              <span className="font-medium">コピーしました</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-4 h-4 tk-dim" strokeWidth={1.5} />
+                              <span>テキストをコピー</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                <button
+                  onClick={handleSave}
+                  className="px-6 py-2.5 text-[9px] uppercase rounded-[2px] border bg-acc tk-onacc bd-acc hbg-none h-acc transition flex items-center gap-2"
+                  style={{ letterSpacing: '.16em' }}
+                >
+                  <Save className="w-3.5 h-3.5" strokeWidth={1.5} /> {saved ? 'Saved ✓' : 'Save entry'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {loading && (
+        <div className="fixed bottom-4 right-4 text-[9px] tk-faint uppercase" style={{ letterSpacing: '.2em' }}>
+          Loading...
+        </div>
+      )}
+    </div>
+  );
+}

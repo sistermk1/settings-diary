@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* The Settings Diary component ships its own scoped CSS (colors, fonts,
+   custom utilities) inside a <style> block, so only minimal global resets
+   live here. Keep the page background aligned with the app's paper tone to
+   avoid a flash before the component mounts. */
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+  background: #f6f6f4;
+}
