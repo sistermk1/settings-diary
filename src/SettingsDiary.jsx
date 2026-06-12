@@ -77,6 +77,8 @@ export default function SettingsDiary() {
   const [tlPlayer, setTlPlayer] = useState(null); // timeline inline playback: { id, blobUrl, loading }
   const [anGame, setAnGame] = useState('ALL'); // Analysis tab game filter
   const uploadRef = useRef(null); // in-flight clip upload: { file, abort, driveId, saved }
+  const preloadRef = useRef(null); // PC only: latest clip prefetched as a Blob { driveId, blob }
+  const videoSharePrepRef = useRef(null); // de-dupes concurrent share preparations
 
   const PRESET_GAMES = ['VALORANT', 'OVERWATCH 2', 'APEX LEGENDS', 'CS2', 'Marvel Rivals', 'Rainbow Six Siege X', 'Fortnite', 'Battlefield', 'Call of Duty', 'Kovaaks', 'AimLab'];
   const allGames = [...PRESET_GAMES, ...customGames];
@@ -396,7 +398,7 @@ export default function SettingsDiary() {
     if (!driveId || clipLoading) return;
     setClipLoading(true);
     try {
-      const blob = await adapter.loadClipBlob(driveId);
+      const blob = await getClipBlob(driveId);
       const blobUrl = URL.createObjectURL(blob);
       setFormData((prev) => prev.clipFile?.driveId === driveId
         ? { ...prev, clipFile: { ...prev.clipFile, blobUrl } }
@@ -444,7 +446,7 @@ export default function SettingsDiary() {
       return { id: entry.id, blobUrl: null, loading: true };
     });
     try {
-      const blob = await adapter.loadClipBlob(driveId);
+      const blob = await getClipBlob(driveId);
       const url = URL.createObjectURL(blob);
       setTlPlayer((prev) => {
         if (prev?.id !== entry.id) {
@@ -469,6 +471,40 @@ export default function SettingsDiary() {
       });
     }
   }, [view]);
+
+  // PC only: prefetch the most recent clip in the background so the first
+  // play is instant. The Blob lives in memory; consumers mint their own
+  // object URLs from it. Mobile keeps the on-demand behavior (data savings).
+  useEffect(() => {
+    if (!isSignedIn) return;
+    if (!window.matchMedia('(min-width: 640px)').matches) return;
+    let target = null;
+    const keys = Object.keys(entries).sort((a, b) => b.localeCompare(a));
+    for (const k of keys) {
+      const list = entries[k] || [];
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (list[i]?.clipFile?.driveId) { target = list[i].clipFile.driveId; break; }
+      }
+      if (target) break;
+    }
+    if (!target || preloadRef.current?.driveId === target) return;
+    preloadRef.current = { driveId: target, blob: null };
+    adapter.loadClipBlob(target)
+      .then((blob) => {
+        if (preloadRef.current?.driveId === target) preloadRef.current.blob = blob;
+      })
+      .catch(() => {
+        if (preloadRef.current?.driveId === target) preloadRef.current = null;
+      });
+  }, [isSignedIn, entries]);
+
+  // Use the prefetched Blob when it matches, else hit Drive.
+  const getClipBlob = async (driveId) => {
+    if (preloadRef.current?.driveId === driveId && preloadRef.current.blob) {
+      return preloadRef.current.blob;
+    }
+    return adapter.loadClipBlob(driveId);
+  };
 
   const handleDragEnter = (e) => {
     e.preventDefault();
@@ -691,45 +727,87 @@ export default function SettingsDiary() {
     }
   };
 
-  // Share the actual video via the OS share sheet (Web Share API). X's web
-  // intent can't attach media and the X API needs a server, but the X mobile
-  // app accepts files from the native sheet. Two taps by design: prepare
-  // (download from Drive) → share, because navigator.share() must be called
-  // inside a fresh user gesture or iOS rejects it.
+  // X video post, with the fewest taps the web allows. X's intent URL can't
+  // carry media and the X API needs a server, so:
+  //  - the video is downloaded AUTOMATICALLY when the share menu opens
+  //  - mobile: one tap opens the share sheet with the file (pick X there)
+  //  - PC: one click saves the .mp4 and opens the X composer (drag & drop)
   const prepareVideoShare = async () => {
     const clip = formData.clipFile;
-    if (!clip) return;
-    setVideoShare({ status: 'preparing', file: null });
-    try {
-      const blob = clip.blobUrl
-        ? await (await fetch(clip.blobUrl)).blob()
-        : await adapter.loadClipBlob(clip.driveId);
-      const file = new File([blob], clip.name || 'clip.mp4', { type: clip.type || 'video/mp4' });
-      if (navigator.canShare && !navigator.canShare({ files: [file] })) {
-        setVideoShare({ status: 'idle', file: null });
-        setImportNotice({ ok: false, msg: 'この端末は動画付き共有に対応していません(テキストのコピーをご利用ください)' });
-        return;
+    if (!clip || (!clip.blobUrl && !clip.driveId)) return null;
+    if (!clip.blobUrl && !isSignedIn) {
+      setImportNotice({ ok: false, msg: '動画付きポストには Google ログインが必要です' });
+      return null;
+    }
+    const clipId = clip.driveId || clip.blobUrl;
+    if (videoShare.file && videoShare.clipId === clipId) return videoShare.file;
+    if (videoSharePrepRef.current) return videoSharePrepRef.current;
+    const job = (async () => {
+      setVideoShare({ status: 'preparing', file: null, clipId });
+      try {
+        const blob = clip.blobUrl
+          ? await (await fetch(clip.blobUrl)).blob()
+          : await getClipBlob(clip.driveId);
+        const file = new File([blob], clip.name || 'clip.mp4', { type: clip.type || 'video/mp4' });
+        setVideoShare({ status: 'ready', file, clipId });
+        return file;
+      } catch (e) {
+        console.error('Video share prepare error:', e);
+        setVideoShare({ status: 'idle', file: null, clipId: null });
+        setImportNotice({ ok: false, msg: '動画の準備に失敗しました' });
+        return null;
+      } finally {
+        videoSharePrepRef.current = null;
       }
-      setVideoShare({ status: 'ready', file });
-    } catch (e) {
-      console.error('Video share prepare error:', e);
-      setVideoShare({ status: 'idle', file: null });
-      setImportNotice({ ok: false, msg: '動画の準備に失敗しました' });
+    })();
+    videoSharePrepRef.current = job;
+    return job;
+  };
+
+  const shareVideoToX = async () => {
+    const clip = formData.clipFile;
+    const clipId = clip?.driveId || clip?.blobUrl;
+    let file = videoShare.clipId === clipId ? videoShare.file : null;
+    if (!file) file = await prepareVideoShare();
+    if (!file) return;
+    let text = buildShareText(formData, selectedDate);
+    if (formData.clipUrl && formData.clipUrl.trim()) text += `\n${formData.clipUrl.trim()}`;
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], text });
+        setShareOpen(false);
+        setVideoShare({ status: 'idle', file: null, clipId: null });
+      } catch (e) {
+        if (e && e.name === 'NotAllowedError') {
+          // gesture expired while downloading — the file is ready now
+          setImportNotice({ ok: false, msg: '準備ができました。もう一度タップすると共有シートが開きます(共有先で X を選択)' });
+        }
+        // AbortError = user closed the sheet; keep the file for a retry
+      }
+    } else {
+      // PC: save the file + open the X composer; the user drops the file in
+      const url = URL.createObjectURL(file);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      window.open(`https://x.com/intent/tweet?${new URLSearchParams({ text })}`, '_blank', 'noopener,noreferrer');
+      setImportNotice({ ok: true, msg: '動画を保存しました。開いた X の投稿画面に動画ファイルをドラッグ&ドロップしてください。' });
+      setTimeout(() => setImportNotice(null), 8000);
     }
   };
 
-  const doVideoShare = async () => {
-    if (!videoShare.file) return;
-    let text = buildShareText(formData, selectedDate);
-    if (formData.clipUrl && formData.clipUrl.trim()) text += `\n${formData.clipUrl.trim()}`;
-    try {
-      await navigator.share({ files: [videoShare.file], text });
-      setShareOpen(false);
-      setVideoShare({ status: 'idle', file: null });
-    } catch (e) {
-      // user dismissed the sheet — keep the prepared file for another try
+  // start the download the moment the share menu opens — by the time the
+  // user taps the post button the file is usually ready (single-tap share)
+  useEffect(() => {
+    const clip = formData.clipFile;
+    if (shareOpen && clip && (clip.blobUrl || (clip.driveId && isSignedIn))) {
+      prepareVideoShare();
     }
-  };
+  }, [shareOpen]);
 
   // ── Export / Import ──
   const handleExport = () => {
@@ -1008,15 +1086,12 @@ export default function SettingsDiary() {
               Setup Diary
             </h1>
             <p className="text-[10px] tk-dim uppercase mt-1.5" style={{ letterSpacing: '.22em' }}>
-              Device &amp; Sens Log
+              Device &amp; Sens
             </p>
           </div>
           <div className="text-right">
             <div className="sd-num text-[34px] font-light leading-none tracking-[.02em]">
               {monthLabel}
-              <small className="text-[15px] font-normal tk-dim ml-2" style={{ letterSpacing: '.06em' }}>
-                {entryCount} {entryCount === 1 ? 'entry' : 'entries'}
-              </small>
             </div>
             <div className="text-[11px] tk-dim mt-1.5" style={{ letterSpacing: '.12em' }}>
               TODAY {formatDateKey(today)}
@@ -2334,18 +2409,17 @@ export default function SettingsDiary() {
                             </>
                           )}
                         </button>
-                        {!!navigator.share && (formData.clipFile?.driveId || formData.clipFile?.blobUrl) && (
+                        {(formData.clipFile?.driveId || formData.clipFile?.blobUrl) && (
                           <button
-                            onClick={videoShare.status === 'ready' ? doVideoShare : prepareVideoShare}
+                            onClick={shareVideoToX}
                             disabled={videoShare.status === 'preparing'}
                             className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2 disabled:opacity-50"
                           >
-                            <Film className="w-4 h-4 tk-dim" strokeWidth={1.5} />
-                            <span>
-                              {videoShare.status === 'preparing' ? '動画を準備中…'
-                                : videoShare.status === 'ready' ? '共有シートを開く(動画付き)'
-                                : '動画付きで共有'}
+                            <span className="w-5 h-5 flex items-center justify-center border bd-ink rounded-[2px] text-[10px] font-bold shrink-0">𝕏</span>
+                            <span className="flex-1">
+                              {videoShare.status === 'preparing' ? '動画を準備中…' : '動画付きでポスト'}
                             </span>
+                            <Film className={`w-4 h-4 shrink-0 ${videoShare.status === 'ready' ? 'tk-acc' : 'tk-faint'}`} strokeWidth={1.5} />
                           </button>
                         )}
                       </div>
