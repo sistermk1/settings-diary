@@ -2,7 +2,7 @@
 
 競技ゲーマー向けのデバイス設定・感度記録アプリ。Vite + React + Tailwind で構築した PWA(予定)。
 
-このリポジトリは [`production-spec.md`](./production-spec.md) のフェーズ順に実装します。**現在は Phase 3(クリップアップロード)まで完了。**
+このリポジトリは [`production-spec.md`](./production-spec.md) のフェーズ順に実装します。**全 4 フェーズ完了(PWA 対応済み)。**
 
 ## 技術スタック
 
@@ -15,7 +15,13 @@
 | スタイル | Tailwind CSS(ビルド版)|
 | ホスティング | Vercel(無料枠)|
 
-PWA 化(Phase 4)は今後追加します。
+## PWA(Phase 4)
+
+- `vite-plugin-pwa` で manifest + Service Worker を自動生成(アプリシェルをプリキャッシュ →
+  オフラインでも起動・閲覧・記録が可能。Drive 同期はオンライン復帰後に追いつく)
+- iOS: `apple-touch-icon` / メタタグ対応、Safari には「共有 → ホーム画面に追加」の案内バナーを初回のみ表示
+- スマホ幅ではタブが画面下部のボトムナビになる(PC は従来の上部タブのまま)
+- アイコン: `public/` の `favicon.svg` を原版に PNG(192 / 512 / maskable / apple-touch)を生成
 
 ## クリップ動画(Phase 3)
 

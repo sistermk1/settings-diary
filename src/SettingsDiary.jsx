@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ChevronLeft, ChevronRight, X, Save, Trash2, Star, ChevronDown, Plus, Share2, Copy, Check, Upload, Film, AlertCircle, Download, Sun, Moon, Search, LogIn, LogOut, Cloud, CloudOff } from 'lucide-react';
+import { ChevronLeft, ChevronRight, X, Save, Trash2, Star, ChevronDown, Plus, Share2, Copy, Check, Upload, Film, AlertCircle, Download, Sun, Moon, Search, LogIn, LogOut, Cloud, CloudOff, CalendarDays, History, Share } from 'lucide-react';
 import { storage } from './storage';
 import * as adapter from './syncAdapter';
 
@@ -70,6 +70,7 @@ export default function SettingsDiary() {
   const [thumbUrl, setThumbUrl] = useState(null);
   const [clipLoading, setClipLoading] = useState(false);
   const [videoShare, setVideoShare] = useState({ status: 'idle', file: null }); // Web Share API: idle | preparing | ready
+  const [iosInstallHint, setIosInstallHint] = useState(false); // iOS Safari: "add to Home Screen" banner, shown once
   const uploadRef = useRef(null); // in-flight clip upload: { file, abort, driveId, saved }
 
   const PRESET_GAMES = ['VALORANT', 'OVERWATCH 2', 'APEX LEGENDS', 'CS2', 'Marvel Rivals', 'Rainbow Six Siege X', 'Fortnite', 'Battlefield', 'Call of Duty', 'Kovaaks', 'AimLab'];
@@ -88,6 +89,13 @@ export default function SettingsDiary() {
         if (data.entries && Object.keys(data.entries).length) setEntries(data.entries);
         if (Array.isArray(data.customGames) && data.customGames.length) setCustomGames(data.customGames);
 
+        // iOS Safari has no install prompt — guide once to 共有 → ホーム画面に追加 (spec §6)
+        const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+        const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+        if (isIos && !standalone) {
+          const dismissed = await storage.get('iosInstallHintDismissed');
+          if (!dismissed) setIosInstallHint(true);
+        }
       } catch (e) {
         console.error('Load error:', e);
       } finally {
@@ -118,6 +126,11 @@ export default function SettingsDiary() {
     const next = theme === 'light' ? 'dark' : 'light';
     setTheme(next);
     try { await storage.set('theme', next); } catch (e) {}
+  };
+
+  const dismissIosInstallHint = async () => {
+    setIosInstallHint(false);
+    try { await storage.set('iosInstallHintDismissed', '1'); } catch (e) {}
   };
 
   // ── Google Drive sync (Phase 2) ──
@@ -904,7 +917,7 @@ export default function SettingsDiary() {
         .sd-tbtn.on { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
       `}</style>
 
-      <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8 sm:py-12">
+      <div className="max-w-5xl mx-auto px-5 sm:px-8 pt-8 sm:pt-12 pb-28 sm:pb-12">
         {/* Header */}
         <header className="mb-10 flex items-end justify-between flex-wrap gap-6">
           <div>
@@ -929,9 +942,9 @@ export default function SettingsDiary() {
           </div>
         </header>
 
-        {/* Toolbar: tabs + data/theme controls */}
+        {/* Toolbar: tabs (desktop — mobile uses the bottom nav) + data/theme controls */}
         <div className="mb-5 flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex gap-2">
+          <div className="hidden sm:flex gap-2">
             {[
               { id: 'calendar', label: 'Calendar' },
               { id: 'timeline', label: 'Timeline' },
@@ -992,6 +1005,18 @@ export default function SettingsDiary() {
             )}
           </div>
         </div>
+
+        {/* iOS: add-to-Home-Screen guide, shown once (spec §6) */}
+        {iosInstallHint && (
+          <div className="mb-5 border bd-peri rounded-[2px] px-4 py-3 flex items-center gap-3 flex-wrap bg-perisoft">
+            <Share className="w-4 h-4 tk-acc shrink-0" strokeWidth={1.5} />
+            <div className="text-[12px] flex-1 min-w-[200px]">
+              ホーム画面に追加するとアプリとして使えます:Safari の<span className="font-medium">共有ボタン</span> →
+              <span className="font-medium">「ホーム画面に追加」</span>
+            </div>
+            <button onClick={dismissIosInstallHint} className="sd-tbtn">閉じる</button>
+          </div>
+        )}
 
         {/* Drive re-login hint (token is memory-only, so each visit needs a click) */}
         {syncHint && !isSignedIn && (
@@ -1358,6 +1383,28 @@ export default function SettingsDiary() {
           <span>{isSignedIn ? 'Drive sync' : 'Local mode'}</span>
         </div>
       </div>
+
+      {/* ── Mobile bottom tab bar (app-like nav; desktop keeps the top tabs) ── */}
+      <nav
+        className="sm:hidden fixed bottom-0 inset-x-0 z-40 bg-modal border-t bd-line flex"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+      >
+        {[
+          { id: 'calendar', label: 'Calendar', Icon: CalendarDays },
+          { id: 'timeline', label: 'Timeline', Icon: History },
+        ].map(({ id, label, Icon }) => (
+          <button
+            key={id}
+            onClick={() => setView(id)}
+            className={`flex-1 pt-2.5 pb-2 flex flex-col items-center gap-1 transition ${
+              view === id ? 'tk-acc' : 'tk-dim'
+            }`}
+          >
+            <Icon className="w-5 h-5" strokeWidth={view === id ? 2 : 1.5} />
+            <span className="text-[9px] uppercase font-medium" style={{ letterSpacing: '.18em' }}>{label}</span>
+          </button>
+        ))}
+      </nav>
 
       {/* ── Entry Modal ── */}
       {selectedDate && (
@@ -1812,7 +1859,10 @@ export default function SettingsDiary() {
             </div>
 
             {/* Action bar */}
-            <div className="sticky bottom-0 bg-modal border-t bd-line px-6 py-4 flex items-center justify-between gap-3">
+            <div
+              className="sticky bottom-0 bg-modal border-t bd-line px-6 py-4 flex items-center justify-between gap-3"
+              style={{ paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))' }}
+            >
               {deleteClipConfirm ? (
                 <>
                   <div className="text-[11px] flex items-center gap-2 min-w-0">
