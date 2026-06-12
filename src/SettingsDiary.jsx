@@ -77,7 +77,7 @@ export default function SettingsDiary() {
   const [tlPlayer, setTlPlayer] = useState(null); // timeline inline playback: { id, blobUrl, loading }
   const [anGame, setAnGame] = useState('ALL'); // Analysis tab game filter
   const uploadRef = useRef(null); // in-flight clip upload: { file, abort, driveId, saved }
-  const preloadRef = useRef(null); // PC only: latest clip prefetched as a Blob { driveId, blob }
+  const preloadRef = useRef({ cache: new Map(), queue: [], running: false }); // PC only: prefetched clip Blobs (driveId → Blob)
   const videoSharePrepRef = useRef(null); // de-dupes concurrent share preparations
 
   const PRESET_GAMES = ['VALORANT', 'OVERWATCH 2', 'APEX LEGENDS', 'CS2', 'Marvel Rivals', 'Rainbow Six Siege X', 'Fortnite', 'Battlefield', 'Call of Duty', 'Kovaaks', 'AimLab'];
@@ -472,37 +472,51 @@ export default function SettingsDiary() {
     }
   }, [view]);
 
-  // PC only: prefetch the most recent clip in the background so the first
-  // play is instant. The Blob lives in memory; consumers mint their own
-  // object URLs from it. Mobile keeps the on-demand behavior (data savings).
+  // PC only: prefetch clips in the background, newest first (= the order
+  // they appear on screen in the timeline), one at a time so playback feels
+  // instant. Capped to the newest 4 to bound memory; mobile keeps the
+  // on-demand behavior (data savings). Blobs live in memory; consumers mint
+  // their own object URLs from them.
   useEffect(() => {
     if (!isSignedIn) return;
     if (!window.matchMedia('(min-width: 640px)').matches) return;
-    let target = null;
+    const PRELOAD_MAX = 4;
+    const ids = [];
     const keys = Object.keys(entries).sort((a, b) => b.localeCompare(a));
     for (const k of keys) {
       const list = entries[k] || [];
       for (let i = list.length - 1; i >= 0; i--) {
-        if (list[i]?.clipFile?.driveId) { target = list[i].clipFile.driveId; break; }
+        const id = list[i]?.clipFile?.driveId;
+        if (id && !ids.includes(id)) ids.push(id);
       }
-      if (target) break;
+      if (ids.length >= PRELOAD_MAX) break;
     }
-    if (!target || preloadRef.current?.driveId === target) return;
-    preloadRef.current = { driveId: target, blob: null };
-    adapter.loadClipBlob(target)
-      .then((blob) => {
-        if (preloadRef.current?.driveId === target) preloadRef.current.blob = blob;
-      })
-      .catch(() => {
-        if (preloadRef.current?.driveId === target) preloadRef.current = null;
-      });
+    const state = preloadRef.current;
+    state.queue = ids.slice(0, PRELOAD_MAX).filter((id) => !state.cache.has(id));
+    if (state.running) return; // the running pump picks up the new queue
+    state.running = true;
+    (async () => {
+      while (state.queue.length) {
+        const id = state.queue.shift();
+        if (state.cache.has(id)) continue;
+        try {
+          const blob = await adapter.loadClipBlob(id);
+          state.cache.set(id, blob);
+          while (state.cache.size > PRELOAD_MAX) {
+            state.cache.delete(state.cache.keys().next().value);
+          }
+        } catch (e) {
+          // skip this clip; on-demand load still works
+        }
+      }
+      state.running = false;
+    })();
   }, [isSignedIn, entries]);
 
-  // Use the prefetched Blob when it matches, else hit Drive.
+  // Use a prefetched Blob when available, else hit Drive.
   const getClipBlob = async (driveId) => {
-    if (preloadRef.current?.driveId === driveId && preloadRef.current.blob) {
-      return preloadRef.current.blob;
-    }
+    const cached = preloadRef.current.cache.get(driveId);
+    if (cached) return cached;
     return adapter.loadClipBlob(driveId);
   };
 
@@ -1080,21 +1094,23 @@ export default function SettingsDiary() {
       <div className="max-w-5xl mx-auto px-5 sm:px-8 pt-8 sm:pt-12 pb-28 sm:pb-12">
         {/* Header */}
         <header className="mb-10 flex items-end justify-between flex-wrap gap-6">
-          <div>
-            <h1 className="text-[11px] font-semibold uppercase flex items-center gap-2.5" style={{ letterSpacing: '.34em' }}>
-              <img src="/favicon.svg" alt="" className="w-5 h-5 rounded-[5px]" />
-              Setup Diary
-            </h1>
-            <p className="text-[10px] tk-dim uppercase mt-1.5" style={{ letterSpacing: '.22em' }}>
-              Device &amp; Sens
-            </p>
+          <div className="flex items-center gap-3.5">
+            <img src="/favicon.svg" alt="" className="w-11 h-11 rounded-[10px] shrink-0" />
+            <div>
+              <h1 className="text-[19px] font-light uppercase leading-none" style={{ letterSpacing: '.26em' }}>
+                Setup Diary
+              </h1>
+              <p className="text-[9px] tk-dim uppercase mt-2" style={{ letterSpacing: '.26em' }}>
+                Gear &amp; Settings
+              </p>
+            </div>
           </div>
           <div className="text-right">
-            <div className="sd-num text-[34px] font-light leading-none tracking-[.02em]">
+            <div className="sd-num text-[19px] font-light leading-none" style={{ letterSpacing: '.06em' }}>
               {monthLabel}
             </div>
-            <div className="text-[11px] tk-dim mt-1.5" style={{ letterSpacing: '.12em' }}>
-              TODAY {formatDateKey(today)}
+            <div className="text-[9px] tk-dim uppercase mt-2" style={{ letterSpacing: '.18em' }}>
+              Today {formatDateKey(today)}
             </div>
           </div>
         </header>
@@ -2254,6 +2270,8 @@ export default function SettingsDiary() {
                       <video
                         src={formData.clipFile.blobUrl}
                         controls
+                        autoPlay
+                        playsInline
                         className="w-full max-h-72 bg-black"
                       />
                     ) : formData.clipFile.driveId ? (
