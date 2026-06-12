@@ -717,7 +717,7 @@ export default function SettingsDiary() {
       lines.push(memo.length > 100 ? memo.slice(0, 97) + '...' : memo);
     }
     lines.push('');
-    lines.push('#SetupDiary');
+    lines.push('#VILDUP');
     return lines.join('\n');
   };
 
@@ -836,7 +836,7 @@ export default function SettingsDiary() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `setup-diary-${formatDateKey(new Date()).replace(/-/g, '')}.json`;
+    a.download = `vildup-${formatDateKey(new Date()).replace(/-/g, '')}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -979,10 +979,10 @@ export default function SettingsDiary() {
       const bin = atob(dataUrl.split(',')[1]);
       const arr = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-      const file = new File([arr], `setup-diary-${kind}.png`, { type: 'image/png' });
+      const file = new File([arr], `vildup-${kind}.png`, { type: 'image/png' });
       const text = kind === 'record'
-        ? `${recordStats.totalDays}日分のセットアップを記録 — 称号「${recordStats.tier ? recordStats.tier.name : 'Stone'}」 #SetupDiary`
-        : '自分に合うセットアップを分析しました #SetupDiary';
+        ? `${recordStats.totalDays}日分のセットアップを記録 — 称号「${recordStats.tier ? recordStats.tier.name : 'Stone'}」 #VILDUP`
+        : '自分に合うセットアップを分析しました #VILDUP';
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         navigator.share({ files: [file], text }).catch(() => {});
       } else {
@@ -1097,11 +1097,17 @@ export default function SettingsDiary() {
           <div className="flex items-center gap-3.5">
             <img src="/favicon.svg" alt="" className="w-11 h-11 rounded-[10px] shrink-0" />
             <div>
-              <h1 className="text-[19px] font-light uppercase leading-none" style={{ letterSpacing: '.26em' }}>
-                Setup Diary
+              <h1 className="text-[19px] font-light uppercase leading-none flex items-baseline gap-2" style={{ letterSpacing: '.26em' }}>
+                Vildup
+                <span
+                  className="text-[8px] tk-dim border bd-line rounded-[2px] px-1.5 py-0.5 normal-case shrink-0"
+                  style={{ letterSpacing: '.1em' }}
+                >
+                  α 0.0.1 ver
+                </span>
               </h1>
               <p className="text-[9px] tk-dim uppercase mt-2" style={{ letterSpacing: '.26em' }}>
-                Gear &amp; Settings
+                Setup Diary for Gamers
               </p>
             </div>
           </div>
@@ -1878,7 +1884,7 @@ export default function SettingsDiary() {
         {/* Footer note */}
         <div className="mt-5 text-[9px] tk-faint uppercase flex justify-between flex-wrap gap-2" style={{ letterSpacing: '.18em' }}>
           <span>{isSignedIn ? '日付を選択して記録 — Google Drive と同期' : '日付を選択して記録 — ローカル保存(ログインなしで全機能利用可)'}</span>
-          <span>{isSignedIn ? 'Drive sync' : 'Local mode'}</span>
+          <span>{(isSignedIn ? 'Drive sync' : 'Local mode') + ' · α 0.0.1'}</span>
         </div>
       </div>
 

@@ -1,4 +1,4 @@
-# Setup Diary
+# VILDUP — Setup Diary for Gamers
 
 競技ゲーマー向けのデバイス設定・感度記録アプリ。Vite + React + Tailwind で構築した PWA(予定)。
 

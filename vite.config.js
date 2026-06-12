@@ -10,8 +10,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
-        name: 'Setup Diary',
-        short_name: 'Setup Diary',
+        name: 'VILDUP — Setup Diary for Gamers',
+        short_name: 'VILDUP',
         description: '競技ゲーマー向けのデバイス設定・感度記録アプリ',
         lang: 'ja',
         theme_color: '#4F0C28',

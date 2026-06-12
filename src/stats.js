@@ -197,10 +197,13 @@ function drawCardBase(x, label) {
   x.fillRect(0, 0, 1200, 675);
   drawLogo(x, 64, 56, 60);
   x.fillStyle = INK;
-  x.font = `600 26px ${FONT}`;
+  x.font = `600 28px ${FONT}`;
   try { x.letterSpacing = '8px'; } catch (e) {}
-  x.fillText('SETUP DIARY', 148, 95);
+  x.fillText('VILDUP', 148, 84);
   x.fillStyle = DIM;
+  x.font = `500 15px ${FONT}`;
+  try { x.letterSpacing = '5px'; } catch (e) {}
+  x.fillText('SETUP DIARY FOR GAMERS', 148, 112);
   x.font = `600 22px ${FONT}`;
   const w = x.measureText(label).width;
   x.fillText(label, 1136 - w, 95);
@@ -213,7 +216,7 @@ function drawCardBase(x, label) {
   x.stroke();
   x.fillStyle = DIM;
   x.font = `500 24px ${FONT}`;
-  x.fillText('#SetupDiary', 64, 627);
+  x.fillText('#VILDUP', 64, 627);
 }
 
 /** Record タブのシェアカード(1200x675 canvas を返す)。 */
