@@ -1,4 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" fill="#f6f6f4"/>
-  <rect x="156" y="156" width="200" height="200" fill="#4F0C28"/>
+  <rect width="512" height="512" fill="#4F0C28"/>
+  <g fill="#f6f6f4" opacity="0.35">
+    <circle cx="102" cy="116" r="16"/><circle cx="205" cy="116" r="16"/><circle cx="307" cy="116" r="16"/><circle cx="410" cy="116" r="16"/>
+    <circle cx="102" cy="219" r="16"/><circle cx="307" cy="219" r="16"/><circle cx="410" cy="219" r="16"/>
+    <circle cx="102" cy="321" r="16"/><circle cx="205" cy="321" r="16"/><circle cx="410" cy="321" r="16"/>
+    <circle cx="102" cy="424" r="16"/><circle cx="205" cy="424" r="16"/><circle cx="307" cy="424" r="16"/>
+  </g>
+  <polyline points="102,424 205,219 307,321 410,116" fill="none" stroke="#f6f6f4" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="410" cy="116" r="30" fill="#C5D2F8"/>
 </svg>
