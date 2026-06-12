@@ -69,6 +69,7 @@ export default function SettingsDiary() {
   const [deleteClipConfirm, setDeleteClipConfirm] = useState(false); // entry delete: also remove Drive clip?
   const [thumbUrl, setThumbUrl] = useState(null);
   const [clipLoading, setClipLoading] = useState(false);
+  const [videoShare, setVideoShare] = useState({ status: 'idle', file: null }); // Web Share API: idle | preparing | ready
   const uploadRef = useRef(null); // in-flight clip upload: { file, abort, driveId, saved }
 
   const PRESET_GAMES = ['VALORANT', 'OVERWATCH 2', 'APEX LEGENDS', 'CS2', 'Marvel Rivals', 'Rainbow Six Siege X', 'Fortnite', 'Battlefield', 'Call of Duty', 'Kovaaks', 'AimLab'];
@@ -179,6 +180,7 @@ export default function SettingsDiary() {
     setThumbUrl(null);
     setClipLoading(false);
     setDeleteClipConfirm(false);
+    setVideoShare({ status: 'idle', file: null });
     const key = formatDateKey(selectedDate);
     const dayList = entries[key] || [];
 
@@ -309,6 +311,38 @@ export default function SettingsDiary() {
     });
   };
 
+  // Draw a ~480px poster frame from a local video Blob URL → JPEG data URL.
+  // Stored inside clipFile (data.json) so previews show instantly everywhere
+  // (modal, timeline, other devices) without relying on Drive's thumbnail
+  // pipeline, which lags minutes behind uploads and is auth-finicky in <img>.
+  const captureVideoThumb = (blobUrl) => new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    video.src = blobUrl;
+    video.onloadeddata = () => {
+      try { video.currentTime = Math.min(0.5, (video.duration || 1) * 0.1); } catch (e) { done(null); }
+    };
+    video.onseeked = () => {
+      try {
+        const w = Math.min(480, video.videoWidth || 480);
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = Math.max(1, Math.round((video.videoHeight / video.videoWidth) * w) || 270);
+        canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+        done(canvas.toDataURL('image/jpeg', 0.65));
+      } catch (e) {
+        done(null);
+      }
+      video.removeAttribute('src');
+    };
+    video.onerror = () => done(null);
+    setTimeout(() => done(null), 8000);
+  });
+
   const acceptFile = (file) => {
     if (!file || !file.type.startsWith('video/')) return;
     if (!isSignedIn) {
@@ -322,6 +356,12 @@ export default function SettingsDiary() {
       return { ...prev, clipFile: { name: file.name, size: file.size, type: file.type, blobUrl, status: 'uploading', progress: 0 } };
     });
     startUpload(file, blobUrl);
+    captureVideoThumb(blobUrl).then((thumb) => {
+      if (!thumb) return;
+      setFormData((prev) => prev.clipFile?.blobUrl === blobUrl
+        ? { ...prev, clipFile: { ...prev.clipFile, thumb } }
+        : prev);
+    });
   };
 
   const retryUpload = () => {
@@ -343,6 +383,26 @@ export default function SettingsDiary() {
       setFormData((prev) => prev.clipFile?.driveId === driveId
         ? { ...prev, clipFile: { ...prev.clipFile, blobUrl } }
         : prev);
+      // backfill a poster frame for entries saved before thumbs existed,
+      // and persist it so the timeline/other devices get it too
+      if (!formData.clipFile.thumb) {
+        captureVideoThumb(blobUrl).then((thumb) => {
+          if (!thumb) return;
+          setFormData((prev) => prev.clipFile?.driveId === driveId
+            ? { ...prev, clipFile: { ...prev.clipFile, thumb } }
+            : prev);
+          const key = formatDateKey(selectedDate);
+          const dayList = entries[key] || [];
+          if (selectedEntryId && dayList.some(e => e.id === selectedEntryId && e.clipFile?.driveId === driveId)) {
+            const newList = dayList.map(e => e.id === selectedEntryId
+              ? { ...e, clipFile: { ...e.clipFile, thumb } }
+              : e);
+            const newEntries = { ...entries, [key]: newList };
+            setEntries(newEntries);
+            adapter.saveAll({ entries: newEntries, customGames }).catch(() => {});
+          }
+        });
+      }
     } catch (e) {
       console.error('Clip load error:', e);
       setImportNotice({ ok: false, msg: 'クリップの読み込みに失敗しました' });
@@ -389,6 +449,7 @@ export default function SettingsDiary() {
     setThumbUrl(null);
     setClipLoading(false);
     setDeleteClipConfirm(false);
+    setVideoShare({ status: 'idle', file: null });
     setSelectedDate(null);
     setSelectedEntryId(null);
   };
@@ -413,9 +474,9 @@ export default function SettingsDiary() {
       if (hasData) {
         const toSave = { ...formData };
         if (toSave.clipFile) {
-          const { name, size, type, driveId } = toSave.clipFile;
+          const { name, size, type, driveId, thumb } = toSave.clipFile;
           if (driveId) {
-            toSave.clipFile = { name, size, type, driveId }; // driveId is canonical (spec §3.2)
+            toSave.clipFile = { name, size, type, driveId, ...(thumb ? { thumb } : {}) }; // driveId is canonical (spec §3.2)
           } else if (toSave.clipFile.blobUrl || toSave.clipFile.status) {
             toSave.clipFile = null; // unfinished/failed upload — never persist
           }
@@ -568,6 +629,46 @@ export default function SettingsDiary() {
       setTimeout(() => setCopied(false), 1500);
     } catch (e) {
       console.error('Copy failed:', e);
+    }
+  };
+
+  // Share the actual video via the OS share sheet (Web Share API). X's web
+  // intent can't attach media and the X API needs a server, but the X mobile
+  // app accepts files from the native sheet. Two taps by design: prepare
+  // (download from Drive) → share, because navigator.share() must be called
+  // inside a fresh user gesture or iOS rejects it.
+  const prepareVideoShare = async () => {
+    const clip = formData.clipFile;
+    if (!clip) return;
+    setVideoShare({ status: 'preparing', file: null });
+    try {
+      const blob = clip.blobUrl
+        ? await (await fetch(clip.blobUrl)).blob()
+        : await adapter.loadClipBlob(clip.driveId);
+      const file = new File([blob], clip.name || 'clip.mp4', { type: clip.type || 'video/mp4' });
+      if (navigator.canShare && !navigator.canShare({ files: [file] })) {
+        setVideoShare({ status: 'idle', file: null });
+        setImportNotice({ ok: false, msg: 'この端末は動画付き共有に対応していません(テキストのコピーをご利用ください)' });
+        return;
+      }
+      setVideoShare({ status: 'ready', file });
+    } catch (e) {
+      console.error('Video share prepare error:', e);
+      setVideoShare({ status: 'idle', file: null });
+      setImportNotice({ ok: false, msg: '動画の準備に失敗しました' });
+    }
+  };
+
+  const doVideoShare = async () => {
+    if (!videoShare.file) return;
+    let text = buildShareText(formData, selectedDate);
+    if (formData.clipUrl && formData.clipUrl.trim()) text += `\n${formData.clipUrl.trim()}`;
+    try {
+      await navigator.share({ files: [videoShare.file], text });
+      setShareOpen(false);
+      setVideoShare({ status: 'idle', file: null });
+    } catch (e) {
+      // user dismissed the sheet — keep the prepared file for another try
     }
   };
 
@@ -1216,9 +1317,18 @@ export default function SettingsDiary() {
                       )}
 
                       {entry.clipFile && (
-                        <div className="text-[10px] tk-ink mt-3 flex items-center gap-1.5">
-                          <Film className="w-3 h-3 tk-dim" strokeWidth={1.5} /> {entry.clipFile.name}
-                          <span className="sd-num tk-dim">· {formatBytes(entry.clipFile.size)}</span>
+                        <div className="mt-3">
+                          {entry.clipFile.thumb && (
+                            <img
+                              src={entry.clipFile.thumb}
+                              alt=""
+                              className="w-full max-w-[260px] aspect-video object-cover rounded-[2px] border bd-line mb-2"
+                            />
+                          )}
+                          <div className="text-[10px] tk-ink flex items-center gap-1.5">
+                            <Film className="w-3 h-3 tk-dim" strokeWidth={1.5} /> {entry.clipFile.name}
+                            <span className="sd-num tk-dim">· {formatBytes(entry.clipFile.size)}</span>
+                          </div>
                         </div>
                       )}
 
@@ -1617,10 +1727,10 @@ export default function SettingsDiary() {
                       />
                     ) : formData.clipFile.driveId ? (
                       <div className="aspect-video bg-perisofter relative flex items-center justify-center flex-col gap-3 p-4 overflow-hidden">
-                        {thumbUrl && (
+                        {(formData.clipFile.thumb || thumbUrl) && (
                           <>
                             <img
-                              src={thumbUrl}
+                              src={formData.clipFile.thumb || thumbUrl}
                               alt=""
                               className="absolute inset-0 w-full h-full object-cover"
                               onError={() => setThumbUrl(null)}
@@ -1765,6 +1875,20 @@ export default function SettingsDiary() {
                             </>
                           )}
                         </button>
+                        {!!navigator.share && (formData.clipFile?.driveId || formData.clipFile?.blobUrl) && (
+                          <button
+                            onClick={videoShare.status === 'ready' ? doVideoShare : prepareVideoShare}
+                            disabled={videoShare.status === 'preparing'}
+                            className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2 disabled:opacity-50"
+                          >
+                            <Film className="w-4 h-4 tk-dim" strokeWidth={1.5} />
+                            <span>
+                              {videoShare.status === 'preparing' ? '動画を準備中…'
+                                : videoShare.status === 'ready' ? '共有シートを開く(動画付き)'
+                                : '動画付きで共有'}
+                            </span>
+                          </button>
+                        )}
                       </div>
                     </>
                   )}
