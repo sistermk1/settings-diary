@@ -2,7 +2,7 @@
 
 競技ゲーマー向けのデバイス設定・感度記録アプリ。Vite + React + Tailwind で構築した PWA(予定)。
 
-このリポジトリは [`production-spec.md`](./production-spec.md) のフェーズ順に実装します。**現在は Phase 2(Google ログイン + Drive 同期)まで完了。**
+このリポジトリは [`production-spec.md`](./production-spec.md) のフェーズ順に実装します。**現在は Phase 3(クリップアップロード)まで完了。**
 
 ## 技術スタック
 
@@ -15,7 +15,17 @@
 | スタイル | Tailwind CSS(ビルド版)|
 | ホスティング | Vercel(無料枠)|
 
-クリップアップロード(Phase 3)・PWA 化(Phase 4)は今後追加します。
+PWA 化(Phase 4)は今後追加します。
+
+## クリップ動画(Phase 3)
+
+- エントリーモーダルで動画を選択すると、即座に Drive の `SettingsDiary/clips/` へ
+  **resumable upload**(進捗バー付き、ネットワーク断は中断位置から再開、3回まで自動リトライ)
+- 保存すると `clipFile.driveId` が記録に紐付く(アップロード未完了のまま保存はできない)
+- 再生は「▶ 再生」ボタンで Drive から取得(`alt=media` + Blob URL。サムネイルは `thumbnailLink`)
+- クリップ付き記録の削除時は「記録のみ削除 / クリップも削除」を確認
+- クリップを差し替え・除去して保存した場合、古い Drive ファイルは自動削除(孤児ファイル防止)
+- クリップ機能はログイン時のみ(未ログインでは URL 欄のみ利用可)
 
 ## Google ログインを有効にする(Phase 2)
 

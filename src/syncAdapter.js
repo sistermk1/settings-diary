@@ -234,6 +234,39 @@ export async function signIn() {
   }
 }
 
+// ── Clips (Phase 3) — thin guards over drive.js so the UI never imports it ──
+
+/**
+ * Resumable-upload a video to SettingsDiary/clips/. `onProgress` gets 0..1,
+ * `handle.abort()` cancels. Resolves to the Drive fileId (→ clipFile.driveId).
+ */
+export async function uploadClip(file, dateKey, onProgress, handle) {
+  if (!signedIn) throw new Error('Google ログインが必要です');
+  const folderId = await drive.ensureClipsFolder();
+  const name = `${dateKey}_${Math.random().toString(36).slice(2, 8)}_${file.name}`;
+  return drive.resumableUpload(file, name, folderId, onProgress, handle);
+}
+
+/** Download the clip bytes for playback (caller turns it into a Blob URL). */
+export function loadClipBlob(driveId) {
+  return drive.downloadBlob(driveId);
+}
+
+/** Drive's preview image for the clip, or null while not yet generated. */
+export function getClipThumb(driveId) {
+  return drive.getThumbnail(driveId);
+}
+
+/** Best-effort delete of a clip file (404 = already gone, fine). */
+export async function deleteClip(driveId) {
+  if (!signedIn || !driveId) return;
+  try {
+    await drive.deleteFile(driveId);
+  } catch (e) {
+    if (e.status !== 404) throw e;
+  }
+}
+
 /**
  * Revoke the grant. Local cache is kept unless the user chose to wipe it
  * (spec §4-5: ask the user).
@@ -241,6 +274,7 @@ export async function signIn() {
 export async function signOut({ keepLocal }) {
   auth.revoke();
   signedIn = false;
+  drive.resetFolderCache();
   fileId = null;
   dirty = false;
   if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }

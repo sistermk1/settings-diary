@@ -66,6 +66,10 @@ export default function SettingsDiary() {
   const [authBusy, setAuthBusy] = useState(false);
   const [syncHint, setSyncHint] = useState(false); // had a Drive session before, not signed in yet
   const [logoutConfirm, setLogoutConfirm] = useState(false);
+  const [deleteClipConfirm, setDeleteClipConfirm] = useState(false); // entry delete: also remove Drive clip?
+  const [thumbUrl, setThumbUrl] = useState(null);
+  const [clipLoading, setClipLoading] = useState(false);
+  const uploadRef = useRef(null); // in-flight clip upload: { file, abort, driveId, saved }
 
   const PRESET_GAMES = ['VALORANT', 'OVERWATCH 2', 'APEX LEGENDS', 'CS2', 'Marvel Rivals', 'Rainbow Six Siege X', 'Fortnite', 'Battlefield', 'Call of Duty', 'Kovaaks', 'AimLab'];
   const allGames = [...PRESET_GAMES, ...customGames];
@@ -165,6 +169,10 @@ export default function SettingsDiary() {
   // ── Form initialization on date/entry selection ──
   useEffect(() => {
     if (!selectedDate) return;
+    cleanupPendingUpload(); // switching entries abandons an unfinished upload
+    setThumbUrl(null);
+    setClipLoading(false);
+    setDeleteClipConfirm(false);
     const key = formatDateKey(selectedDate);
     const dayList = entries[key] || [];
 
@@ -206,6 +214,20 @@ export default function SettingsDiary() {
     setShareOpen(false);
   }, [selectedDate, selectedEntryId]);
 
+  // Drive thumbnail for a saved clip (best-effort; null until Drive generates it)
+  useEffect(() => {
+    const driveId = formData.clipFile?.driveId;
+    if (!driveId || !isSignedIn || formData.clipFile?.blobUrl) {
+      setThumbUrl(null);
+      return;
+    }
+    let alive = true;
+    adapter.getClipThumb(driveId)
+      .then((url) => { if (alive) setThumbUrl(url || null); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [formData.clipFile?.driveId, formData.clipFile?.blobUrl, isSignedIn]);
+
   const clearPrefilled = () => {
     setFormData(EMPTY_FORM);
     setPrefilledFrom(null);
@@ -235,13 +257,79 @@ export default function SettingsDiary() {
     return `${n.toFixed(n < 10 ? 1 : 0)} ${units[i]}`;
   };
 
+  // Abort an in-flight upload and remove its Drive file if it was never
+  // attached to a saved entry (prevents orphans in clips/).
+  const cleanupPendingUpload = () => {
+    const u = uploadRef.current;
+    if (!u) return;
+    u.abort?.();
+    if (u.driveId && !u.saved) adapter.deleteClip(u.driveId).catch(() => {});
+    uploadRef.current = null;
+  };
+
+  const startUpload = (file, blobUrl) => {
+    const dateKey = formatDateKey(selectedDate);
+    const handle = { file, abort: null, driveId: null, saved: false };
+    uploadRef.current = handle;
+    // progress callbacks guard on blobUrl so a replaced clip ignores stale events
+    adapter.uploadClip(file, dateKey, (frac) => {
+      setFormData((prev) => prev.clipFile?.blobUrl === blobUrl
+        ? { ...prev, clipFile: { ...prev.clipFile, status: 'uploading', progress: Math.min(99, Math.round(frac * 100)) } }
+        : prev);
+    }, handle).then((driveId) => {
+      handle.driveId = driveId;
+      setFormData((prev) => prev.clipFile?.blobUrl === blobUrl
+        ? { ...prev, clipFile: { ...prev.clipFile, status: 'done', progress: 100, driveId } }
+        : prev);
+    }).catch((e) => {
+      if (e.aborted) return;
+      console.error('Clip upload error:', e);
+      setFormData((prev) => prev.clipFile?.blobUrl === blobUrl
+        ? { ...prev, clipFile: { ...prev.clipFile, status: 'error' } }
+        : prev);
+    });
+  };
+
   const acceptFile = (file) => {
     if (!file || !file.type.startsWith('video/')) return;
+    if (!isSignedIn) {
+      setImportNotice({ ok: false, msg: 'クリップ動画の保存には Google ログインが必要です(URL 欄はログインなしで使えます)' });
+      return;
+    }
+    cleanupPendingUpload();
     const blobUrl = URL.createObjectURL(file);
     setFormData((prev) => {
       if (prev.clipFile?.blobUrl) URL.revokeObjectURL(prev.clipFile.blobUrl);
-      return { ...prev, clipFile: { name: file.name, size: file.size, type: file.type, blobUrl } };
+      return { ...prev, clipFile: { name: file.name, size: file.size, type: file.type, blobUrl, status: 'uploading', progress: 0 } };
     });
+    startUpload(file, blobUrl);
+  };
+
+  const retryUpload = () => {
+    const file = uploadRef.current?.file;
+    const blobUrl = formData.clipFile?.blobUrl;
+    if (!file || !blobUrl) return;
+    setFormData((prev) => ({ ...prev, clipFile: { ...prev.clipFile, status: 'uploading', progress: 0 } }));
+    startUpload(file, blobUrl);
+  };
+
+  // Drive playback: alt=media needs the auth header, so stream into a Blob URL
+  const playClip = async () => {
+    const driveId = formData.clipFile?.driveId;
+    if (!driveId || clipLoading) return;
+    setClipLoading(true);
+    try {
+      const blob = await adapter.loadClipBlob(driveId);
+      const blobUrl = URL.createObjectURL(blob);
+      setFormData((prev) => prev.clipFile?.driveId === driveId
+        ? { ...prev, clipFile: { ...prev.clipFile, blobUrl } }
+        : prev);
+    } catch (e) {
+      console.error('Clip load error:', e);
+      setImportNotice({ ok: false, msg: 'クリップの読み込みに失敗しました' });
+    } finally {
+      setClipLoading(false);
+    }
   };
 
   const handleDragEnter = (e) => {
@@ -267,16 +355,21 @@ export default function SettingsDiary() {
     e.target.value = '';
   };
   const removeClipFile = () => {
+    cleanupPendingUpload();
     if (formData.clipFile?.blobUrl) URL.revokeObjectURL(formData.clipFile.blobUrl);
     setFormData({ ...formData, clipFile: null });
   };
 
   // Close modal, revoking any unsaved blob URL
   const closeModal = () => {
+    cleanupPendingUpload();
     setFormData((prev) => {
       if (prev.clipFile?.blobUrl) URL.revokeObjectURL(prev.clipFile.blobUrl);
       return prev;
     });
+    setThumbUrl(null);
+    setClipLoading(false);
+    setDeleteClipConfirm(false);
     setSelectedDate(null);
     setSelectedEntryId(null);
   };
@@ -300,13 +393,14 @@ export default function SettingsDiary() {
     try {
       if (hasData) {
         const toSave = { ...formData };
-        if (toSave.clipFile?.blobUrl) {
-          toSave.clipFile = {
-            name: toSave.clipFile.name,
-            size: toSave.clipFile.size,
-            type: toSave.clipFile.type,
-            _mock: true,
-          };
+        if (toSave.clipFile) {
+          const { name, size, type, driveId } = toSave.clipFile;
+          if (driveId) {
+            toSave.clipFile = { name, size, type, driveId }; // driveId is canonical (spec §3.2)
+          } else if (toSave.clipFile.blobUrl || toSave.clipFile.status) {
+            toSave.clipFile = null; // unfinished/failed upload — never persist
+          }
+          // else: legacy metadata-only record (old mock data) — keep as-is
         }
         const dayList = entries[key] || [];
         let newList;
@@ -318,6 +412,12 @@ export default function SettingsDiary() {
         const newEntries = { ...entries, [key]: newList };
         await adapter.saveAll({ entries: newEntries, customGames });
         setEntries(newEntries);
+        // a replaced/removed clip leaves its old Drive file behind — clean it up
+        const prevClipId = dayList.find(e => e.id === selectedEntryId)?.clipFile?.driveId;
+        if (prevClipId && prevClipId !== toSave.clipFile?.driveId) {
+          adapter.deleteClip(prevClipId).catch(() => {});
+        }
+        if (uploadRef.current) uploadRef.current.saved = true;
         if (formData.clipFile?.blobUrl) URL.revokeObjectURL(formData.clipFile.blobUrl);
       }
       setSaved(true);
@@ -331,9 +431,11 @@ export default function SettingsDiary() {
     }
   };
 
-  const handleDelete = async () => {
+  const performDelete = async (alsoDeleteClip) => {
+    setDeleteClipConfirm(false);
     const key = formatDateKey(selectedDate);
     const dayList = entries[key] || [];
+    const target = dayList.find(e => e.id === selectedEntryId);
     const newList = dayList.filter(e => e.id !== selectedEntryId);
     try {
       const newEntries = { ...entries };
@@ -344,10 +446,24 @@ export default function SettingsDiary() {
       }
       await adapter.saveAll({ entries: newEntries, customGames });
       setEntries(newEntries);
+      if (alsoDeleteClip && target?.clipFile?.driveId) {
+        adapter.deleteClip(target.clipFile.driveId).catch(() => {});
+      }
       closeModal();
     } catch (e) {
       console.error('Delete error:', e);
     }
+  };
+
+  const handleDelete = () => {
+    const key = formatDateKey(selectedDate);
+    const target = (entries[key] || []).find(e => e.id === selectedEntryId);
+    // ask about the Drive file only when there is one we can actually delete
+    if (target?.clipFile?.driveId && isSignedIn) {
+      setDeleteClipConfirm(true);
+      return;
+    }
+    performDelete(false);
   };
 
   const prevMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
@@ -1448,7 +1564,7 @@ export default function SettingsDiary() {
                         {dragOver ? 'ここにドロップ' : '動画をドラッグ'}
                       </div>
                       <div className="text-[9px] tk-faint mt-1.5" style={{ letterSpacing: '.1em' }}>
-                        またはタップして選択
+                        {isSignedIn ? 'またはタップして選択' : 'クリップの保存には Google ログインが必要です'}
                       </div>
                     </div>
                     <div className="flex items-center gap-3 my-3.5">
@@ -1480,12 +1596,33 @@ export default function SettingsDiary() {
                         controls
                         className="w-full max-h-72 bg-black"
                       />
+                    ) : formData.clipFile.driveId ? (
+                      <div className="aspect-video bg-perisofter relative flex items-center justify-center flex-col gap-3 p-4 overflow-hidden">
+                        {thumbUrl && (
+                          <img src={thumbUrl} alt="" className="absolute inset-0 w-full h-full object-cover opacity-60" />
+                        )}
+                        {isSignedIn ? (
+                          <button
+                            type="button"
+                            onClick={playClip}
+                            disabled={clipLoading}
+                            className="relative z-10 px-5 py-2.5 text-[10px] uppercase border bd-acc rounded-[2px] bg-acc tk-onacc transition disabled:opacity-60"
+                            style={{ letterSpacing: '.18em' }}
+                          >
+                            {clipLoading ? '読み込み中…' : '▶ 再生'}
+                          </button>
+                        ) : (
+                          <div className="relative z-10 text-[9px] tk-dim text-center" style={{ letterSpacing: '.08em' }}>
+                            Google ログインすると Drive から再生できます
+                          </div>
+                        )}
+                      </div>
                     ) : (
                       <div className="aspect-video bg-perisofter flex items-center justify-center flex-col gap-2.5 p-4">
                         <Film className="w-7 h-7 tk-faint" strokeWidth={1.2} />
                         <div className="text-[9px] tk-dim text-center leading-relaxed" style={{ letterSpacing: '.08em' }}>
-                          保存済みクリップ情報<br/>
-                          <span className="tk-faint">(モックではプレビュー不可 — 本番では Drive からストリーミング)</span>
+                          動画本体は保存されていません<br/>
+                          <span className="tk-faint">(ファイル情報のみの記録)</span>
                         </div>
                       </div>
                     )}
@@ -1508,20 +1645,51 @@ export default function SettingsDiary() {
                         Remove
                       </button>
                     </div>
+                    {formData.clipFile.status === 'uploading' && (
+                      <div className="px-3.5 pb-3.5 pt-3 border-t bd-line2">
+                        <div className="flex items-center justify-between text-[9px] tk-dim mb-1.5 uppercase" style={{ letterSpacing: '.14em' }}>
+                          <span>Drive へアップロード中…</span>
+                          <span className="sd-num">{formData.clipFile.progress || 0}%</span>
+                        </div>
+                        <div className="h-1 bg-line rounded-full overflow-hidden">
+                          <div className="h-full bg-acc transition-all" style={{ width: `${formData.clipFile.progress || 0}%` }} />
+                        </div>
+                      </div>
+                    )}
+                    {formData.clipFile.status === 'error' && (
+                      <div className="px-3.5 py-3 border-t bd-line2 flex items-center gap-2 flex-wrap">
+                        <AlertCircle className="w-3.5 h-3.5 tk-acc" strokeWidth={1.5} />
+                        <span className="text-[10px] tk-acc flex-1">アップロードに失敗しました(このまま保存してもクリップは記録されません)</span>
+                        <button type="button" onClick={retryUpload} className="sd-tbtn">再試行</button>
+                      </div>
+                    )}
+                    {formData.clipFile.status === 'done' && (
+                      <div className="px-3.5 py-2.5 border-t bd-line2 flex items-center gap-1.5 text-[9px] tk-dim" style={{ letterSpacing: '.1em' }}>
+                        <Check className="w-3 h-3 tk-acc" strokeWidth={1.5} /> Drive にアップロード済み — 保存すると記録に紐付きます
+                      </div>
+                    )}
                   </div>
                 )}
 
-                {formData.clipFile && formData.clipFile.blobUrl && (
-                  <div className="mt-2.5 flex items-start gap-1.5 text-[9px] tk-faint leading-relaxed" style={{ letterSpacing: '.04em' }}>
-                    <AlertCircle className="w-3 h-3 mt-px shrink-0" strokeWidth={1.5} />
-                    <span>このモックではファイル本体は保存されません。本番版ではここで Google Drive へアップロードされます。</span>
-                  </div>
-                )}
               </div>
             </div>
 
             {/* Action bar */}
             <div className="sticky bottom-0 bg-modal border-t bd-line px-6 py-4 flex items-center justify-between gap-3">
+              {deleteClipConfirm ? (
+                <>
+                  <div className="text-[11px] flex items-center gap-2 min-w-0">
+                    <AlertCircle className="w-4 h-4 tk-acc shrink-0" strokeWidth={1.5} />
+                    <span>Drive 上のクリップ動画も削除しますか?</span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button onClick={() => setDeleteClipConfirm(false)} className="sd-tbtn">キャンセル</button>
+                    <button onClick={() => performDelete(false)} className="sd-tbtn">記録のみ削除</button>
+                    <button onClick={() => performDelete(true)} className="sd-tbtn on">クリップも削除</button>
+                  </div>
+                </>
+              ) : (
+                <>
               {selectedEntryId && selectedDayList.some(e => e.id === selectedEntryId) ? (
                 <button
                   onClick={handleDelete}
@@ -1577,12 +1745,15 @@ export default function SettingsDiary() {
 
                 <button
                   onClick={handleSave}
-                  className="px-6 py-2.5 text-[9px] uppercase rounded-[2px] border bg-acc tk-onacc bd-acc hbg-none h-acc transition flex items-center gap-2"
+                  disabled={formData.clipFile?.status === 'uploading'}
+                  className="px-6 py-2.5 text-[9px] uppercase rounded-[2px] border bg-acc tk-onacc bd-acc hbg-none h-acc transition flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
                   style={{ letterSpacing: '.16em' }}
                 >
-                  <Save className="w-3.5 h-3.5" strokeWidth={1.5} /> {saved ? 'Saved ✓' : 'Save entry'}
+                  <Save className="w-3.5 h-3.5" strokeWidth={1.5} /> {saved ? 'Saved ✓' : formData.clipFile?.status === 'uploading' ? 'Uploading…' : 'Save entry'}
                 </button>
               </div>
+                </>
+              )}
             </div>
           </div>
         </div>
