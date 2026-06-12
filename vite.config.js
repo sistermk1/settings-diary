@@ -10,8 +10,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
-        name: 'Settings Diary',
-        short_name: 'SetDiary',
+        name: 'Setup Diary',
+        short_name: 'Setup Diary',
         description: '競技ゲーマー向けのデバイス設定・感度記録アプリ',
         lang: 'ja',
         theme_color: '#4F0C28',

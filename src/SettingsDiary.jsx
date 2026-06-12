@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ChevronLeft, ChevronRight, X, Save, Trash2, Star, ChevronDown, Plus, Share2, Copy, Check, Upload, Film, AlertCircle, Download, Sun, Moon, Search, LogIn, LogOut, Cloud, CloudOff, CalendarDays, History, Share } from 'lucide-react';
+import { ChevronLeft, ChevronRight, X, Save, Trash2, Star, ChevronDown, Plus, Share2, Copy, Check, Upload, Film, AlertCircle, Download, Sun, Moon, Search, LogIn, LogOut, Cloud, CloudOff, CalendarDays, History, Share, Menu } from 'lucide-react';
+import { AFFILIATES } from './affiliates';
 import { storage } from './storage';
 import * as adapter from './syncAdapter';
 
@@ -71,6 +72,8 @@ export default function SettingsDiary() {
   const [clipLoading, setClipLoading] = useState(false);
   const [videoShare, setVideoShare] = useState({ status: 'idle', file: null }); // Web Share API: idle | preparing | ready
   const [iosInstallHint, setIosInstallHint] = useState(false); // iOS Safari: "add to Home Screen" banner, shown once
+  const [menuOpen, setMenuOpen] = useState(false); // hamburger menu (export / import / theme / auth)
+  const [tlPlayer, setTlPlayer] = useState(null); // timeline inline playback: { id, blobUrl, loading }
   const uploadRef = useRef(null); // in-flight clip upload: { file, abort, driveId, saved }
 
   const PRESET_GAMES = ['VALORANT', 'OVERWATCH 2', 'APEX LEGENDS', 'CS2', 'Marvel Rivals', 'Rainbow Six Siege X', 'Fortnite', 'Battlefield', 'Call of Duty', 'Kovaaks', 'AimLab'];
@@ -424,6 +427,47 @@ export default function SettingsDiary() {
     }
   };
 
+  // Timeline inline playback: tap the thumbnail → play right there (no modal).
+  // One active player at a time; the previous blob is revoked on switch.
+  const playTimelineClip = async (entry) => {
+    const driveId = entry.clipFile?.driveId;
+    if (!driveId) return;
+    if (!isSignedIn) {
+      setImportNotice({ ok: false, msg: 'クリップの再生には Google ログインが必要です' });
+      return;
+    }
+    if (tlPlayer?.id === entry.id) return;
+    setTlPlayer((prev) => {
+      if (prev?.blobUrl) URL.revokeObjectURL(prev.blobUrl);
+      return { id: entry.id, blobUrl: null, loading: true };
+    });
+    try {
+      const blob = await adapter.loadClipBlob(driveId);
+      const url = URL.createObjectURL(blob);
+      setTlPlayer((prev) => {
+        if (prev?.id !== entry.id) {
+          URL.revokeObjectURL(url);
+          return prev;
+        }
+        return { id: entry.id, blobUrl: url, loading: false };
+      });
+    } catch (e) {
+      console.error('Timeline clip load error:', e);
+      setTlPlayer(null);
+      setImportNotice({ ok: false, msg: 'クリップの読み込みに失敗しました' });
+    }
+  };
+
+  // leaving the timeline stops inline playback and frees the blob
+  useEffect(() => {
+    if (view !== 'timeline') {
+      setTlPlayer((prev) => {
+        if (prev?.blobUrl) URL.revokeObjectURL(prev.blobUrl);
+        return null;
+      });
+    }
+  }, [view]);
+
   const handleDragEnter = (e) => {
     e.preventDefault();
     dragCounter.current += 1;
@@ -621,7 +665,7 @@ export default function SettingsDiary() {
       lines.push(memo.length > 100 ? memo.slice(0, 97) + '...' : memo);
     }
     lines.push('');
-    lines.push('#SettingsDiary');
+    lines.push('#SetupDiary');
     return lines.join('\n');
   };
 
@@ -698,7 +742,7 @@ export default function SettingsDiary() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `settings-diary-${formatDateKey(new Date()).replace(/-/g, '')}.json`;
+    a.download = `setup-diary-${formatDateKey(new Date()).replace(/-/g, '')}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -922,8 +966,8 @@ export default function SettingsDiary() {
         <header className="mb-10 flex items-end justify-between flex-wrap gap-6">
           <div>
             <h1 className="text-[11px] font-semibold uppercase flex items-center gap-2.5" style={{ letterSpacing: '.34em' }}>
-              <span className="w-2 h-2 bg-acc inline-block" />
-              Settings Diary
+              <img src="/favicon.svg" alt="" className="w-5 h-5 rounded-[5px]" />
+              Setup Diary
             </h1>
             <p className="text-[10px] tk-dim uppercase mt-1.5" style={{ letterSpacing: '.22em' }}>
               Device &amp; Sens Log
@@ -942,6 +986,32 @@ export default function SettingsDiary() {
           </div>
         </header>
 
+        {/* PR / affiliate slot — configure in src/affiliates.js, hidden when empty */}
+        {AFFILIATES.length > 0 && (
+          <div className="mb-5">
+            <div className="text-[8px] tk-faint uppercase mb-1.5" style={{ letterSpacing: '.24em' }}>PR</div>
+            <div className="flex gap-3 flex-wrap items-center">
+              {AFFILIATES.map((ad, i) => (
+                <a
+                  key={i}
+                  href={ad.href}
+                  target="_blank"
+                  rel="noopener noreferrer sponsored"
+                  className="block border bd-line rounded-[2px] overflow-hidden hbd-acc transition"
+                >
+                  {ad.img ? (
+                    <img src={ad.img} alt={ad.alt || ''} className="block max-h-[90px] w-auto" />
+                  ) : (
+                    <span className="text-[11px] tk-acc underline underline-offset-2 dec-peri hdec-acc px-3.5 py-2.5 inline-block">
+                      {ad.text} ↗
+                    </span>
+                  )}
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Toolbar: tabs (desktop — mobile uses the bottom nav) + data/theme controls */}
         <div className="mb-5 flex items-center justify-between gap-3 flex-wrap">
           <div className="hidden sm:flex gap-2">
@@ -958,13 +1028,7 @@ export default function SettingsDiary() {
               </button>
             ))}
           </div>
-          <div className="flex gap-2 items-center">
-            <button onClick={handleExport} className="sd-tbtn" title="JSONとしてダウンロード">
-              <Download className="w-3 h-3" strokeWidth={1.5} /> Export
-            </button>
-            <button onClick={() => importInputRef.current?.click()} className="sd-tbtn" title="JSONから読み込み">
-              <Upload className="w-3 h-3" strokeWidth={1.5} /> Import
-            </button>
+          <div className="ml-auto flex gap-2 items-center relative">
             <input
               ref={importInputRef}
               type="file"
@@ -972,36 +1036,65 @@ export default function SettingsDiary() {
               onChange={handleImportFile}
               className="hidden"
             />
-            <button onClick={toggleTheme} className="sd-tbtn" title="テーマ切替">
-              {theme === 'light'
-                ? <Moon className="w-3 h-3" strokeWidth={1.5} />
-                : <Sun className="w-3 h-3" strokeWidth={1.5} />}
-              {theme === 'light' ? 'Dark' : 'Light'}
-            </button>
-            {isSignedIn ? (
-              <>
-                <span
-                  className="text-[9px] uppercase tk-dim flex items-center gap-1.5 px-2"
-                  style={{ letterSpacing: '.16em' }}
-                >
-                  {syncStatus === 'offline' || syncStatus === 'error'
-                    ? <CloudOff className="w-3 h-3" strokeWidth={1.5} />
-                    : <Cloud className="w-3 h-3 tk-acc" strokeWidth={1.5} />}
-                  {SYNC_LABELS[syncStatus] || syncStatus}
-                </span>
-                <button onClick={() => setLogoutConfirm(true)} className="sd-tbtn" title="Google からログアウト">
-                  <LogOut className="w-3 h-3" strokeWidth={1.5} /> Logout
-                </button>
-              </>
-            ) : (
-              <button
-                onClick={handleLogin}
-                disabled={authBusy}
-                className="sd-tbtn"
-                title="未ログインでもローカルモードで全機能を使用できます"
+            {isSignedIn && (
+              <span
+                className="text-[9px] uppercase tk-dim flex items-center gap-1.5 px-1"
+                style={{ letterSpacing: '.16em' }}
+                title={`同期状態: ${SYNC_LABELS[syncStatus] || syncStatus}`}
               >
-                <LogIn className="w-3 h-3" strokeWidth={1.5} /> {authBusy ? '接続中…' : 'Google でログイン'}
-              </button>
+                {syncStatus === 'offline' || syncStatus === 'error' || syncStatus === 'needs-login'
+                  ? <CloudOff className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  : <Cloud className="w-3.5 h-3.5 tk-acc" strokeWidth={1.5} />}
+                <span className="hidden sm:inline">{SYNC_LABELS[syncStatus] || syncStatus}</span>
+              </span>
+            )}
+            <button onClick={() => setMenuOpen(!menuOpen)} className="sd-tbtn" title="メニュー">
+              <Menu className="w-3.5 h-3.5" strokeWidth={1.5} /> Menu
+            </button>
+            {menuOpen && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setMenuOpen(false)} />
+                <div className="absolute top-full right-0 mt-1 border bd-line rounded-[2px] bg-modal shadow-xl shadow-black/10 z-40 min-w-[220px]">
+                  {isSignedIn ? (
+                    <button
+                      onClick={() => { setMenuOpen(false); setLogoutConfirm(true); }}
+                      className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left"
+                    >
+                      <LogOut className="w-4 h-4 tk-dim" strokeWidth={1.5} /> Google からログアウト
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => { setMenuOpen(false); handleLogin(); }}
+                      disabled={authBusy}
+                      className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left disabled:opacity-50"
+                      title="未ログインでもローカルモードで全機能を使用できます"
+                    >
+                      <LogIn className="w-4 h-4 tk-dim" strokeWidth={1.5} /> {authBusy ? '接続中…' : 'Google でログイン'}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => { setMenuOpen(false); handleExport(); }}
+                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2"
+                  >
+                    <Download className="w-4 h-4 tk-dim" strokeWidth={1.5} /> Export(JSON)
+                  </button>
+                  <button
+                    onClick={() => { setMenuOpen(false); importInputRef.current?.click(); }}
+                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2"
+                  >
+                    <Upload className="w-4 h-4 tk-dim" strokeWidth={1.5} /> Import(JSON)
+                  </button>
+                  <button
+                    onClick={() => { setMenuOpen(false); toggleTheme(); }}
+                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2"
+                  >
+                    {theme === 'light'
+                      ? <Moon className="w-4 h-4 tk-dim" strokeWidth={1.5} />
+                      : <Sun className="w-4 h-4 tk-dim" strokeWidth={1.5} />}
+                    {theme === 'light' ? 'ダークモード' : 'ライトモード'}
+                  </button>
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -1272,10 +1365,13 @@ export default function SettingsDiary() {
                       {!isLast && <div className="w-px flex-1 bg-line mt-2" />}
                     </div>
 
-                    {/* Content card */}
-                    <button
+                    {/* Content card — tap anywhere (except the clip) to open details */}
+                    <div
+                      role="button"
+                      tabIndex={0}
                       onClick={() => openEntry(date, entry.id)}
-                      className={`flex-1 text-left border bd-line rounded-[2px] hbd-acc bg-card p-4 sm:p-5 transition group ${isLast ? 'mb-2' : 'mb-5'}`}
+                      onKeyDown={(e) => { if (e.key === 'Enter') openEntry(date, entry.id); }}
+                      className={`flex-1 text-left border bd-line rounded-[2px] hbd-acc bg-card p-4 sm:p-5 transition group cursor-pointer ${isLast ? 'mb-2' : 'mb-5'}`}
                     >
                       <div className="flex items-start justify-between gap-3 mb-2.5">
                         <div className="flex items-center gap-2.5 min-w-0">
@@ -1343,13 +1439,37 @@ export default function SettingsDiary() {
 
                       {entry.clipFile && (
                         <div className="mt-3">
-                          {entry.clipFile.thumb && (
+                          {tlPlayer?.id === entry.id && tlPlayer.blobUrl ? (
+                            <video
+                              src={tlPlayer.blobUrl}
+                              controls
+                              autoPlay
+                              playsInline
+                              onClick={(e) => e.stopPropagation()}
+                              className="w-full max-w-[420px] max-h-72 bg-black rounded-[2px] border bd-line mb-2"
+                            />
+                          ) : entry.clipFile.driveId ? (
+                            <div
+                              onClick={(e) => { e.stopPropagation(); playTimelineClip(entry); }}
+                              title="タップで再生"
+                              className="relative w-full max-w-[260px] aspect-video rounded-[2px] border bd-line mb-2 overflow-hidden bg-perisofter"
+                            >
+                              {entry.clipFile.thumb && (
+                                <img src={entry.clipFile.thumb} alt="" className="absolute inset-0 w-full h-full object-cover" />
+                              )}
+                              <div className="absolute inset-0 flex items-center justify-center" style={{ background: 'rgba(0,0,0,.25)' }}>
+                                <span className="px-3.5 py-2 text-[10px] uppercase border bd-acc rounded-[2px] bg-acc tk-onacc" style={{ letterSpacing: '.16em' }}>
+                                  {tlPlayer?.id === entry.id && tlPlayer.loading ? '読み込み中…' : '▶ 再生'}
+                                </span>
+                              </div>
+                            </div>
+                          ) : entry.clipFile.thumb ? (
                             <img
                               src={entry.clipFile.thumb}
                               alt=""
                               className="w-full max-w-[260px] aspect-video object-cover rounded-[2px] border bd-line mb-2"
                             />
-                          )}
+                          ) : null}
                           <div className="text-[10px] tk-ink flex items-center gap-1.5">
                             <Film className="w-3 h-3 tk-dim" strokeWidth={1.5} /> {entry.clipFile.name}
                             <span className="sd-num tk-dim">· {formatBytes(entry.clipFile.size)}</span>
@@ -1368,7 +1488,7 @@ export default function SettingsDiary() {
                           クリップを開く ↗
                         </a>
                       )}
-                    </button>
+                    </div>
                   </div>
                 );
               })}
