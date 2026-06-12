@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ChevronLeft, ChevronRight, X, Save, Trash2, Star, ChevronDown, Plus, Share2, Copy, Check, Upload, Film, AlertCircle, Download, Sun, Moon, Search, LogIn, LogOut, Cloud, CloudOff, CalendarDays, History, Share, Menu } from 'lucide-react';
+import { ChevronLeft, ChevronRight, X, Save, Trash2, Star, ChevronDown, Plus, Share2, Copy, Check, Upload, Film, AlertCircle, Download, Sun, Moon, Search, LogIn, LogOut, Cloud, CloudOff, CalendarDays, History, Share, Menu, Gem, TrendingUp } from 'lucide-react';
 import { AFFILIATES } from './affiliates';
+import { computeRecordStats, computeAnalysis, drawRecordCard, drawAnalysisCard } from './stats';
 import { storage } from './storage';
 import * as adapter from './syncAdapter';
 
@@ -74,6 +75,7 @@ export default function SettingsDiary() {
   const [iosInstallHint, setIosInstallHint] = useState(false); // iOS Safari: "add to Home Screen" banner, shown once
   const [menuOpen, setMenuOpen] = useState(false); // hamburger menu (export / import / theme / auth)
   const [tlPlayer, setTlPlayer] = useState(null); // timeline inline playback: { id, blobUrl, loading }
+  const [anGame, setAnGame] = useState('ALL'); // Analysis tab game filter
   const uploadRef = useRef(null); // in-flight clip upload: { file, abort, driveId, saved }
 
   const PRESET_GAMES = ['VALORANT', 'OVERWATCH 2', 'APEX LEGENDS', 'CS2', 'Marvel Rivals', 'Rainbow Six Siege X', 'Fortnite', 'Battlefield', 'Call of Duty', 'Kovaaks', 'AimLab'];
@@ -872,6 +874,42 @@ export default function SettingsDiary() {
 
   const selectedDayList = selectedDate ? (entries[formatDateKey(selectedDate)] || []) : [];
 
+  // ── Record / Analysis stats (cheap to recompute per render) ──
+  const recordStats = computeRecordStats(entries);
+  const analysisStats = computeAnalysis(flatChrono.map((i) => i.entry), { game: anGame });
+
+  // Stats share: canvas → PNG. Built synchronously (toDataURL) so the user
+  // gesture survives until navigator.share() on iOS.
+  const shareStatsCard = (kind) => {
+    try {
+      const canvas = kind === 'record' ? drawRecordCard(recordStats) : drawAnalysisCard(analysisStats, anGame);
+      const dataUrl = canvas.toDataURL('image/png');
+      const bin = atob(dataUrl.split(',')[1]);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      const file = new File([arr], `setup-diary-${kind}.png`, { type: 'image/png' });
+      const text = kind === 'record'
+        ? `${recordStats.totalDays}日分のセットアップを記録 — 称号「${recordStats.tier ? recordStats.tier.name : 'Stone'}」 #SetupDiary`
+        : '自分に合うセットアップを分析しました #SetupDiary';
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        navigator.share({ files: [file], text }).catch(() => {});
+      } else {
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = file.name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.open(`https://x.com/intent/tweet?${new URLSearchParams({ text })}`, '_blank', 'noopener,noreferrer');
+        setImportNotice({ ok: true, msg: 'シェア画像を保存しました。X の投稿画面で画像を添付してください。' });
+        setTimeout(() => setImportNotice(null), 6000);
+      }
+    } catch (e) {
+      console.error('Share card error:', e);
+      setImportNotice({ ok: false, msg: 'シェア画像の作成に失敗しました' });
+    }
+  };
+
   return (
     <div data-theme={theme} className="sd-root min-h-screen tk-ink" style={{
       fontFamily: '"Gen Interface JP","Helvetica Neue","Segoe UI","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif',
@@ -1018,6 +1056,8 @@ export default function SettingsDiary() {
             {[
               { id: 'calendar', label: 'Calendar' },
               { id: 'timeline', label: 'Timeline' },
+              { id: 'record', label: 'Record' },
+              { id: 'analysis', label: 'Analysis' },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -1497,6 +1537,253 @@ export default function SettingsDiary() {
         </div>
         )}
 
+        {/* ── Record ── */}
+        {view === 'record' && (
+        <div className="border bd-line rounded-[2px] bg-card">
+          <div className="px-6 py-5 border-b bd-line flex items-end justify-between flex-wrap gap-3">
+            <div>
+              <div className="text-[9px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.28em' }}>Record</div>
+              <div className="sd-num text-2xl font-light">
+                {recordStats.totalDays}
+                <span className="tk-dim text-sm font-normal ml-1.5">{recordStats.totalDays === 1 ? 'day' : 'days'} logged</span>
+              </div>
+            </div>
+            <button onClick={() => shareStatsCard('record')} className="sd-tbtn" title="シェア画像を作成して X へ">
+              <Share2 className="w-3 h-3" strokeWidth={1.5} /> シェア画像
+            </button>
+          </div>
+
+          <div className="p-6 sm:p-8 space-y-8">
+            <div className="flex items-center gap-5 flex-wrap">
+              <div
+                className="w-16 h-16 rounded-[4px] shrink-0"
+                style={{
+                  background: recordStats.tier
+                    ? (recordStats.tier.color2
+                      ? `linear-gradient(135deg, ${recordStats.tier.color}, ${recordStats.tier.color2})`
+                      : recordStats.tier.color)
+                    : 'var(--line2)',
+                }}
+              />
+              <div className="min-w-0">
+                <div className="text-[9px] tk-dim uppercase mb-1" style={{ letterSpacing: '.22em' }}>現在の称号</div>
+                <div className="text-[30px] font-light leading-none">{recordStats.tier ? recordStats.tier.name : '—'}</div>
+                {recordStats.next && (
+                  <div className="text-[11px] tk-dim mt-2">
+                    次の称号 <span className="font-medium tk-acc">{recordStats.next.name}</span> まで
+                    あと <span className="sd-num font-semibold tk-ink">{recordStats.next.days - recordStats.totalDays}</span> 日
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {recordStats.next && (
+              <div className="h-1.5 bg-line rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-acc transition-all"
+                  style={{ width: `${Math.min(100, Math.round((recordStats.totalDays / recordStats.next.days) * 100))}%` }}
+                />
+              </div>
+            )}
+
+            <div className="border bd-peri bg-perisoft rounded-[2px] px-4 py-3.5 text-[12px] leading-relaxed">
+              {recordStats.praise}
+            </div>
+
+            <div className="grid grid-cols-3 gap-3 sm:gap-4">
+              <div className="border bd-line rounded-[2px] p-4">
+                <div className="text-[8px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.18em' }}>現在ストリーク</div>
+                <div className="sd-num text-[26px] font-light">{recordStats.currentStreak}<span className="text-[12px] tk-dim ml-1">日</span></div>
+              </div>
+              <div className="border bd-line rounded-[2px] p-4">
+                <div className="text-[8px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.18em' }}>自己最長</div>
+                <div className="sd-num text-[26px] font-light">{recordStats.longestStreak}<span className="text-[12px] tk-dim ml-1">日</span></div>
+              </div>
+              <div className="border bd-line rounded-[2px] p-4">
+                <div className="text-[8px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.18em' }}>累計記録日</div>
+                <div className="sd-num text-[26px] font-light">{recordStats.totalDays}<span className="text-[12px] tk-dim ml-1">日</span></div>
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[9px] tk-dim uppercase mb-2.5" style={{ letterSpacing: '.22em' }}>直近 12 週間</div>
+              <div className="flex gap-1 overflow-x-auto sd-scroll pb-1">
+                {recordStats.heatWeeks.map((week, wi) => (
+                  <div key={wi} className="flex flex-col gap-1">
+                    {week.map((cell) => (
+                      <div
+                        key={cell.key}
+                        title={`${cell.key}: ${cell.count} 件`}
+                        className="w-3 h-3 rounded-[1px]"
+                        style={{
+                          background: cell.count ? 'var(--accent)' : 'var(--line2)',
+                          opacity: cell.count ? Math.min(1, 0.45 + cell.count * 0.25) : 1,
+                        }}
+                      />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {!recordStats.loggedToday && (
+              <div className="flex items-center justify-between gap-3 flex-wrap border bd-acc rounded-[2px] px-4 py-3 bg-perisofter">
+                <span className="text-[12px]">今日はまだ記録していません。1件記録してストリークを継続しましょう。</span>
+                <button onClick={() => { setView('calendar'); openDate(new Date()); }} className="sd-tbtn on">今日を記録</button>
+              </div>
+            )}
+
+            <div>
+              <div className="text-[9px] tk-dim uppercase mb-2.5" style={{ letterSpacing: '.22em' }}>称号ロードマップ</div>
+              <div className="flex gap-1.5 flex-wrap">
+                {recordStats.roadmap.map((t) => (
+                  <div
+                    key={t.name}
+                    title={`${t.days}日`}
+                    className={`text-[10px] border rounded-[2px] px-2.5 py-1.5 flex items-center gap-1.5 ${t.reached ? 'bd-acc tk-ink' : 'bd-line tk-faint'}`}
+                  >
+                    <span
+                      className="w-2.5 h-2.5 rounded-[1px] inline-block"
+                      style={{
+                        background: t.color2 ? `linear-gradient(135deg, ${t.color}, ${t.color2})` : t.color,
+                        opacity: t.reached ? 1 : 0.35,
+                      }}
+                    />
+                    {t.name}
+                    <span className="sd-num tk-faint">{t.days}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+        )}
+
+        {/* ── Analysis ── */}
+        {view === 'analysis' && (
+        <div className="border bd-line rounded-[2px] bg-card">
+          <div className="px-6 py-5 border-b bd-line">
+            <div className="flex items-end justify-between flex-wrap gap-3">
+              <div>
+                <div className="text-[9px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.28em' }}>Analysis</div>
+                <div className="sd-num text-2xl font-light">
+                  {analysisStats.ratedCount}
+                  <span className="tk-dim text-sm font-normal ml-1.5">rated entries</span>
+                </div>
+              </div>
+              <button onClick={() => shareStatsCard('analysis')} className="sd-tbtn" title="シェア画像を作成して X へ">
+                <Share2 className="w-3 h-3" strokeWidth={1.5} /> シェア画像
+              </button>
+            </div>
+            {uniqueGames.length > 0 && (
+              <div className="mt-4 flex gap-1.5 flex-wrap">
+                {['ALL', ...uniqueGames].map((g) => (
+                  <button
+                    key={g}
+                    onClick={() => setAnGame(g)}
+                    className={`text-[10px] border rounded-[2px] px-2.5 py-1.5 transition ${
+                      anGame === g ? 'bg-acc tk-onacc bd-acc' : 'bd-line tk-dim h-acc hbd-acc'
+                    }`}
+                    style={{ letterSpacing: '.05em' }}
+                  >
+                    {g === 'ALL' ? 'すべて' : g}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {analysisStats.ratedCount < 5 ? (
+            <div className="p-16 sm:p-24 text-center">
+              <div className="text-[11px] tk-dim mb-2" style={{ letterSpacing: '.1em' }}>
+                まだ集計に十分な記録がありません(評価付きの記録が 5 件以上必要です)
+              </div>
+              <div className="sd-num text-[11px] tk-faint mb-5">{analysisStats.ratedCount} / 5</div>
+              <button onClick={() => { setView('calendar'); openDate(new Date()); }} className="sd-tbtn">
+                評価付きで記録する
+              </button>
+            </div>
+          ) : (
+            <div className="p-6 sm:p-8 space-y-8">
+              <div>
+                <div className="text-[9px] tk-dim uppercase mb-3" style={{ letterSpacing: '.22em' }}>
+                  ベストギア <span className="normal-case" style={{ letterSpacing: '.04em' }}>(平均評価順)</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  {[
+                    { label: 'Mouse', tag: 'M', list: analysisStats.mouse },
+                    { label: 'Mousepad', tag: 'P', list: analysisStats.mousepad },
+                    { label: 'Keyboard', tag: 'K', list: analysisStats.keyboard },
+                  ].map(({ label, tag, list }) => (
+                    <div key={tag} className="border bd-line rounded-[2px] p-4">
+                      <div className="text-[8px] tk-dim uppercase mb-2.5" style={{ letterSpacing: '.18em' }}>{label}</div>
+                      {list.length === 0 ? (
+                        <div className="text-[11px] tk-faint">記録なし</div>
+                      ) : (
+                        <div className="space-y-2.5">
+                          {list.slice(0, 3).map((g, i) => (
+                            <div key={g.name} className="flex items-baseline gap-2 min-w-0">
+                              <span className={`sd-num text-[11px] shrink-0 ${i === 0 ? 'tk-acc font-semibold' : 'tk-faint'}`}>{i + 1}</span>
+                              <span className={`text-[12px] truncate ${i === 0 ? 'font-medium' : 'tk-dim'}`}>{g.name}</span>
+                              <span className="sd-num text-[11px] tk-dim ml-auto shrink-0 flex items-center gap-1">
+                                <Star className="w-2.5 h-2.5 fill-acc tk-acc" strokeWidth={0} />
+                                {g.avg.toFixed(1)}
+                                <span className="tk-faint">×{g.count}</span>
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-[9px] tk-dim uppercase mb-3" style={{ letterSpacing: '.22em' }}>
+                  あなたのベスト構成 <span className="normal-case" style={{ letterSpacing: '.04em' }}>(★{analysisStats.highRating.toFixed(1)} 以上の {analysisStats.highCount} 件から最頻値)</span>
+                </div>
+                {analysisStats.highCount === 0 ? (
+                  <div className="text-[11px] tk-faint border bd-line rounded-[2px] p-4">
+                    ★{analysisStats.highRating.toFixed(1)} 以上の記録がまだありません
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 border bd-line rounded-[2px] divide-x dv-line2">
+                    {[
+                      { label: 'DPI', v: analysisStats.best.dpi },
+                      { label: 'Sens', v: analysisStats.best.sens },
+                      { label: 'Polling Hz', v: analysisStats.best.pollingRate },
+                      { label: 'LoD mm', v: analysisStats.best.lod },
+                    ].map(({ label, v }) => (
+                      <div key={label} className="p-4">
+                        <div className="text-[8px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.18em' }}>{label}</div>
+                        <div className="sd-num text-[22px] font-light tk-acc">{v ? v.value : '—'}</div>
+                        {v && <div className="sd-num text-[10px] tk-faint mt-0.5">{v.count} 回採用</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {analysisStats.highCount > 0 && (
+                  <div className="grid grid-cols-3 border bd-line rounded-[2px] divide-x dv-line2 mt-3">
+                    {[
+                      { label: 'AP mm', v: analysisStats.best.kbAp },
+                      { label: 'RT mm', v: analysisStats.best.kbRt },
+                      { label: 'KB Polling Hz', v: analysisStats.best.kbPollingRate },
+                    ].map(({ label, v }) => (
+                      <div key={label} className="p-4">
+                        <div className="text-[8px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.18em' }}>{label}</div>
+                        <div className="sd-num text-[22px] font-light tk-acc">{v ? v.value : '—'}</div>
+                        {v && <div className="sd-num text-[10px] tk-faint mt-0.5">{v.count} 回採用</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        )}
+
         {/* Footer note */}
         <div className="mt-5 text-[9px] tk-faint uppercase flex justify-between flex-wrap gap-2" style={{ letterSpacing: '.18em' }}>
           <span>{isSignedIn ? '日付を選択して記録 — Google Drive と同期' : '日付を選択して記録 — ローカル保存(ログインなしで全機能利用可)'}</span>
@@ -1512,6 +1799,8 @@ export default function SettingsDiary() {
         {[
           { id: 'calendar', label: 'Calendar', Icon: CalendarDays },
           { id: 'timeline', label: 'Timeline', Icon: History },
+          { id: 'record', label: 'Record', Icon: Gem },
+          { id: 'analysis', label: 'Analysis', Icon: TrendingUp },
         ].map(({ id, label, Icon }) => (
           <button
             key={id}
