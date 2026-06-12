@@ -87,11 +87,17 @@ export default function SettingsDiary() {
         if (data.entries && Object.keys(data.entries).length) setEntries(data.entries);
         if (Array.isArray(data.customGames) && data.customGames.length) setCustomGames(data.customGames);
 
-        if (adapter.isConfigured() && (await adapter.hadSession())) setSyncHint(true);
       } catch (e) {
         console.error('Load error:', e);
       } finally {
         setLoading(false);
+      }
+      // After the local data is on screen: silently resume the Drive session
+      // (token is memory-only, but a live Google session needs no UI).
+      // Only when that fails do we fall back to the manual login hint.
+      if (adapter.isConfigured() && (await adapter.hadSession())) {
+        const resumed = await adapter.tryResume();
+        if (!resumed) setSyncHint(true);
       }
     }
     loadInitial();
@@ -214,7 +220,8 @@ export default function SettingsDiary() {
     setShareOpen(false);
   }, [selectedDate, selectedEntryId]);
 
-  // Drive thumbnail for a saved clip (best-effort; null until Drive generates it)
+  // Drive thumbnail for a saved clip. Right after an upload Drive hasn't
+  // generated one yet, so poll a few times before giving up.
   useEffect(() => {
     const driveId = formData.clipFile?.driveId;
     if (!driveId || !isSignedIn || formData.clipFile?.blobUrl) {
@@ -222,10 +229,22 @@ export default function SettingsDiary() {
       return;
     }
     let alive = true;
-    adapter.getClipThumb(driveId)
-      .then((url) => { if (alive) setThumbUrl(url || null); })
-      .catch(() => {});
-    return () => { alive = false; };
+    let timer = null;
+    let tries = 0;
+    const attempt = () => {
+      adapter.getClipThumb(driveId)
+        .then((url) => {
+          if (!alive) return;
+          if (url) setThumbUrl(url);
+          else if (++tries < 4) timer = setTimeout(attempt, 5000);
+        })
+        .catch(() => {});
+    };
+    attempt();
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
   }, [formData.clipFile?.driveId, formData.clipFile?.blobUrl, isSignedIn]);
 
   const clearPrefilled = () => {
@@ -1599,7 +1618,15 @@ export default function SettingsDiary() {
                     ) : formData.clipFile.driveId ? (
                       <div className="aspect-video bg-perisofter relative flex items-center justify-center flex-col gap-3 p-4 overflow-hidden">
                         {thumbUrl && (
-                          <img src={thumbUrl} alt="" className="absolute inset-0 w-full h-full object-cover opacity-60" />
+                          <>
+                            <img
+                              src={thumbUrl}
+                              alt=""
+                              className="absolute inset-0 w-full h-full object-cover"
+                              onError={() => setThumbUrl(null)}
+                            />
+                            <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,.3)' }} />
+                          </>
                         )}
                         {isSignedIn ? (
                           <button

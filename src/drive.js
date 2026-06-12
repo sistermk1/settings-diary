@@ -232,7 +232,9 @@ export async function downloadBlob(fileId) {
 /** Drive-generated preview image URL (null until Drive has processed the video). */
 export async function getThumbnail(fileId) {
   const res = await authFetch(`${API}/files/${fileId}?fields=thumbnailLink`);
-  return (await res.json()).thumbnailLink || null;
+  const link = (await res.json()).thumbnailLink || null;
+  // default is a tiny =s220 — ask for a size that fills the preview area
+  return link ? link.replace(/=s\d+$/, '=s640') : null;
 }
 
 /** Permanently delete a file this app created. */

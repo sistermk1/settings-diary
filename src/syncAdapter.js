@@ -197,10 +197,42 @@ async function flush() {
 }
 
 /**
+ * Silent session resume on app start. The access token itself is never
+ * persisted (spec §4), but when the Google session cookie + prior consent
+ * are still alive, requestToken({prompt:''}) completes without any UI —
+ * so a reload keeps the user signed in. Returns false when interaction
+ * would be needed (popup blocked / consent expired); caller shows the
+ * login hint instead. Never throws.
+ */
+export async function tryResume() {
+  if (!auth.isConfigured()) return false;
+  try {
+    if (!(await hadSession())) return false;
+    await signIn();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+let signInPromise = null;
+
+/**
  * Interactive sign-in, then initial last-write-wins sync:
  * newer side (by updatedAt) overwrites the older one.
+ * Concurrent calls share one attempt (guards StrictMode double-effects —
+ * a duplicated first run could otherwise create the Drive folder twice).
  */
-export async function signIn() {
+export function signIn() {
+  if (!signInPromise) {
+    signInPromise = doSignIn().finally(() => {
+      signInPromise = null;
+    });
+  }
+  return signInPromise;
+}
+
+async function doSignIn() {
   setStatus('connecting');
   try {
     await auth.requestToken();
