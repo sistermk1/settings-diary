@@ -15,10 +15,12 @@
 import { storage } from './storage';
 
 const WP_BASE = 'https://vildup.mone2.jp/wp-json/wp/v2';
+// ページ種別ごとのスラッグ候補(先頭から順に探す)。CMS 側でどちらの名前で
+// 作られていても動くようにしている。
 const SLUGS = {
-  about: 'vildup-about',
-  privacy: 'vildup-privacy',
-  ads: 'vildup-ads',
+  about: ['about', 'vildup-about'],
+  privacy: ['privacy-policy', 'vildup-privacy'],
+  ads: ['広告関連', 'vildup-ads', 'ads'],
 };
 
 async function readCache(key) {
@@ -64,18 +66,27 @@ async function fetchPageBySlug(slug) {
   };
 }
 
+// 候補スラッグを先頭から順に探し、最初に見つかったページを返す
+async function fetchPageByCandidates(slugs) {
+  for (const slug of slugs) {
+    const page = await fetchPageBySlug(slug);
+    if (page) return page;
+  }
+  return null;
+}
+
 /**
  * 固定ページを取得。onResult はキャッシュ→最新の順に最大2回呼ばれる。
  * ページ未作成・取得失敗でキャッシュもない場合は onResult(null)。
  */
 export async function loadPage(kind, onResult) {
-  const slug = SLUGS[kind];
-  const cached = await readCache(slug);
+  const cacheKey = `page:${kind}`;
+  const cached = await readCache(cacheKey);
   if (cached) onResult(cached);
   try {
-    const fresh = await fetchPageBySlug(slug);
+    const fresh = await fetchPageByCandidates(SLUGS[kind]);
     if (fresh) {
-      await writeCache(slug, fresh);
+      await writeCache(cacheKey, fresh);
       onResult(fresh);
     } else if (!cached) {
       onResult(null);
@@ -111,7 +122,7 @@ export async function loadAds(onResult) {
   const cached = await readCache('ads-parsed');
   if (cached) onResult(cached);
   try {
-    const page = await fetchPageBySlug(SLUGS.ads);
+    const page = await fetchPageByCandidates(SLUGS.ads);
     if (page) {
       const ads = parseAds(page.html);
       await writeCache('ads-parsed', ads);
