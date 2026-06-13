@@ -34,8 +34,10 @@ export default function SettingsDiary() {
     mouse: '', mousepad: '', keyboard: '',
     dpi: '', sens: '', pollingRate: '', lod: '',
     kbAp: '', kbRt: '', kbPollingRate: '',
-    memo: '', clipUrl: '', clipFile: null
+    memo: '', clipUrl: '', clipFile: null, photos: []
   };
+
+  const MEDIA_MAX = 4; // 1記録あたりの写真+動画の合計上限
 
   // Setup fields tracked for "changed since last entry of same game" highlighting
   const SETUP_FIELDS = ['mouse', 'mousepad', 'keyboard', 'dpi', 'sens', 'pollingRate', 'lod', 'kbAp', 'kbRt', 'kbPollingRate'];
@@ -62,6 +64,7 @@ export default function SettingsDiary() {
   const [pendingImport, setPendingImport] = useState(null); // { entries, customGames, count } awaiting in-app confirmation
   const fileInputRef = useRef(null);
   const importInputRef = useRef(null);
+  const photoInputRef = useRef(null);
   const dragCounter = useRef(0);
   const [formData, setFormData] = useState(EMPTY_FORM);
   const [isSignedIn, setIsSignedIn] = useState(false);
@@ -72,7 +75,7 @@ export default function SettingsDiary() {
   const [deleteClipConfirm, setDeleteClipConfirm] = useState(false); // entry delete: also remove Drive clip?
   const [thumbUrl, setThumbUrl] = useState(null);
   const [clipLoading, setClipLoading] = useState(false);
-  const [videoShare, setVideoShare] = useState({ status: 'idle', file: null }); // Web Share API: idle | preparing | ready
+  const [videoShare, setVideoShare] = useState({ status: 'idle', files: null, key: null }); // Web Share API: idle | preparing | ready
   const [iosInstallHint, setIosInstallHint] = useState(false); // iOS Safari: "add to Home Screen" banner, shown once
   const [menuOpen, setMenuOpen] = useState(false); // hamburger menu (export / import / theme / auth)
   const [tlPlayer, setTlPlayer] = useState(null); // timeline inline playback: { id, blobUrl, loading }
@@ -85,6 +88,8 @@ export default function SettingsDiary() {
   const [guideStep, setGuideStep] = useState(0); // current slide
   const uploadRef = useRef(null); // in-flight clip upload: { file, abort, driveId, saved }
   const preloadRef = useRef({ cache: new Map(), queue: [], running: false }); // PC only: prefetched clip Blobs (driveId → Blob)
+  const pendingPhotosRef = useRef([]); // in-flight photo handles for orphan cleanup
+  const [lightbox, setLightbox] = useState(null); // { url, loading } full-image viewer
   const videoSharePrepRef = useRef(null); // de-dupes concurrent share preparations
 
   const PRESET_GAMES = ['VALORANT', 'OVERWATCH 2', 'APEX LEGENDS', 'CS2', 'Marvel Rivals', 'Rainbow Six Siege X', 'Fortnite', 'Battlefield', 'Call of Duty', 'Kovaaks', 'AimLab'];
@@ -278,14 +283,18 @@ export default function SettingsDiary() {
     setThumbUrl(null);
     setClipLoading(false);
     setDeleteClipConfirm(false);
-    setVideoShare({ status: 'idle', file: null });
+    setVideoShare({ status: 'idle', files: null, key: null });
     const key = formatDateKey(selectedDate);
     const dayList = entries[key] || [];
 
     if (selectedEntryId) {
       const entry = dayList.find(e => e.id === selectedEntryId);
       if (entry) {
-        setFormData({ ...EMPTY_FORM, ...entry });
+        setFormData({
+          ...EMPTY_FORM,
+          ...entry,
+          photos: (entry.photos || []).map((p) => ({ ...p, id: p.id || genId() })),
+        });
         setPrefilledFrom(null);
       }
     } else {
@@ -380,10 +389,17 @@ export default function SettingsDiary() {
   // attached to a saved entry (prevents orphans in clips/).
   const cleanupPendingUpload = () => {
     const u = uploadRef.current;
-    if (!u) return;
-    u.abort?.();
-    if (u.driveId && !u.saved) adapter.deleteClip(u.driveId).catch(() => {});
-    uploadRef.current = null;
+    if (u) {
+      u.abort?.();
+      if (u.driveId && !u.saved) adapter.deleteClip(u.driveId).catch(() => {});
+      uploadRef.current = null;
+    }
+    // 未保存のままになった写真の Drive ファイルを削除(孤児防止)
+    for (const h of pendingPhotosRef.current) {
+      h.abort?.();
+      if (h.driveId && !h.saved) adapter.deleteClip(h.driveId).catch(() => {});
+    }
+    pendingPhotosRef.current = [];
   };
 
   const startUpload = (file, blobUrl) => {
@@ -441,10 +457,103 @@ export default function SettingsDiary() {
     setTimeout(() => done(null), 8000);
   });
 
+  // 写真(複数可)。動画+写真で合計 MEDIA_MAX 枚まで。Drive に保存(クリップ基盤を再利用)。
+  const mediaCount = (fd) => (fd.clipFile ? 1 : 0) + (fd.photos?.length || 0);
+
+  const makeImageThumb = (blobUrl, max = 640) => new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const s = Math.min(1, max / Math.max(img.width, img.height));
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(img.width * s));
+        c.height = Math.max(1, Math.round(img.height * s));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        resolve(c.toDataURL('image/jpeg', 0.72));
+      } catch (e) { resolve(null); }
+    };
+    img.onerror = () => resolve(null);
+    img.src = blobUrl;
+  });
+
+  const acceptPhotos = async (fileList) => {
+    const files = [...(fileList || [])].filter((f) => f && f.type.startsWith('image/'));
+    if (!files.length) return;
+    if (!isSignedIn) {
+      setImportNotice({ ok: false, msg: '写真の保存には Google ログインが必要です' });
+      return;
+    }
+    const dateKey = formatDateKey(selectedDate);
+    let remaining = MEDIA_MAX - mediaCount(formData);
+    if (remaining <= 0) {
+      setImportNotice({ ok: false, msg: `メディアは1記録あたり合計${MEDIA_MAX}つまでです` });
+      return;
+    }
+    const take = files.slice(0, remaining);
+    if (files.length > take.length) {
+      setImportNotice({ ok: false, msg: `合計${MEDIA_MAX}つまでのため ${take.length} 枚だけ追加しました` });
+    }
+    for (const file of take) {
+      const id = genId();
+      const blobUrl = URL.createObjectURL(file);
+      const handle = { id, driveId: null, saved: false, abort: null, file };
+      pendingPhotosRef.current.push(handle);
+      setFormData((prev) => ({
+        ...prev,
+        photos: [...(prev.photos || []), { id, name: file.name, type: file.type, blobUrl, status: 'uploading', progress: 0 }],
+      }));
+      makeImageThumb(blobUrl).then((thumb) => {
+        if (thumb) setFormData((prev) => ({ ...prev, photos: (prev.photos || []).map((p) => p.id === id ? { ...p, thumb } : p) }));
+      });
+      adapter.uploadClip(file, dateKey, (frac) => {
+        setFormData((prev) => ({ ...prev, photos: (prev.photos || []).map((p) => p.id === id ? { ...p, status: 'uploading', progress: Math.min(99, Math.round(frac * 100)) } : p) }));
+      }, handle).then((driveId) => {
+        handle.driveId = driveId;
+        setFormData((prev) => ({ ...prev, photos: (prev.photos || []).map((p) => p.id === id ? { ...p, driveId, status: 'done', progress: 100 } : p) }));
+      }).catch((e) => {
+        if (e.aborted) return;
+        console.error('Photo upload error:', e);
+        setFormData((prev) => ({ ...prev, photos: (prev.photos || []).map((p) => p.id === id ? { ...p, status: 'error' } : p) }));
+      });
+    }
+  };
+
+  const removePhoto = (id) => {
+    const handle = pendingPhotosRef.current.find((h) => h.id === id);
+    if (handle) {
+      handle.abort?.();
+      if (handle.driveId && !handle.saved) adapter.deleteClip(handle.driveId).catch(() => {});
+      pendingPhotosRef.current = pendingPhotosRef.current.filter((h) => h.id !== id);
+    }
+    setFormData((prev) => {
+      const ph = (prev.photos || []).find((p) => p.id === id);
+      if (ph?.blobUrl) URL.revokeObjectURL(ph.blobUrl);
+      return { ...prev, photos: (prev.photos || []).filter((p) => p.id !== id) };
+    });
+  };
+
+  // 保存済み写真をフルサイズ表示(Drive から取得)
+  const openPhoto = async (photo) => {
+    if (photo.blobUrl) { setLightbox({ url: photo.blobUrl, loading: false }); return; }
+    if (!photo.driveId || !isSignedIn) return;
+    setLightbox({ url: null, loading: true });
+    try {
+      const blob = await adapter.loadClipBlob(photo.driveId);
+      setLightbox({ url: URL.createObjectURL(blob), loading: false, revoke: true });
+    } catch (e) {
+      setLightbox(null);
+      setImportNotice({ ok: false, msg: '写真の読み込みに失敗しました' });
+    }
+  };
+
   const acceptFile = (file) => {
     if (!file || !file.type.startsWith('video/')) return;
     if (!isSignedIn) {
       setImportNotice({ ok: false, msg: 'クリップ動画の保存には Google ログインが必要です(URL 欄はログインなしで使えます)' });
+      return;
+    }
+    if (!formData.clipFile && mediaCount(formData) >= MEDIA_MAX) {
+      setImportNotice({ ok: false, msg: `メディアは1記録あたり合計${MEDIA_MAX}つまでです(写真を減らしてください)` });
       return;
     }
     cleanupPendingUpload();
@@ -631,12 +740,14 @@ export default function SettingsDiary() {
     cleanupPendingUpload();
     setFormData((prev) => {
       if (prev.clipFile?.blobUrl) URL.revokeObjectURL(prev.clipFile.blobUrl);
+      for (const p of (prev.photos || [])) if (p.blobUrl) URL.revokeObjectURL(p.blobUrl);
       return prev;
     });
     setThumbUrl(null);
     setClipLoading(false);
     setDeleteClipConfirm(false);
-    setVideoShare({ status: 'idle', file: null });
+    setVideoShare({ status: 'idle', files: null, key: null });
+    setLightbox(null);
     setSelectedDate(null);
     setSelectedEntryId(null);
   };
@@ -669,6 +780,15 @@ export default function SettingsDiary() {
           }
           // else: legacy metadata-only record (old mock data) — keep as-is
         }
+        // 写真: アップロード完了(driveId あり)のみ永続化。blobUrl/status/id は落とす
+        const prevPhotos = (entries[key] || []).find(e => e.id === selectedEntryId)?.photos || [];
+        toSave.photos = (toSave.photos || [])
+          .filter((p) => p.driveId)
+          .map((p) => ({ name: p.name, type: p.type, driveId: p.driveId, ...(p.thumb ? { thumb: p.thumb } : {}) }));
+        // 保存に含まれた driveId は「保存済み」に。差し替え/削除された写真は Drive から消す
+        const keptIds = new Set(toSave.photos.map((p) => p.driveId));
+        for (const h of pendingPhotosRef.current) if (keptIds.has(h.driveId)) h.saved = true;
+        for (const p of prevPhotos) if (p.driveId && !keptIds.has(p.driveId)) adapter.deleteClip(p.driveId).catch(() => {});
         const dayList = entries[key] || [];
         let newList;
         if (selectedEntryId && dayList.some(e => e.id === selectedEntryId)) {
@@ -686,6 +806,7 @@ export default function SettingsDiary() {
         }
         if (uploadRef.current) uploadRef.current.saved = true;
         if (formData.clipFile?.blobUrl) URL.revokeObjectURL(formData.clipFile.blobUrl);
+        for (const p of (formData.photos || [])) if (p.blobUrl) URL.revokeObjectURL(p.blobUrl);
       }
       setSaved(true);
       setTimeout(() => {
@@ -713,8 +834,9 @@ export default function SettingsDiary() {
       }
       await adapter.saveAll({ entries: newEntries, customGames });
       setEntries(newEntries);
-      if (alsoDeleteClip && target?.clipFile?.driveId) {
-        adapter.deleteClip(target.clipFile.driveId).catch(() => {});
+      if (alsoDeleteClip) {
+        if (target?.clipFile?.driveId) adapter.deleteClip(target.clipFile.driveId).catch(() => {});
+        for (const p of (target?.photos || [])) if (p.driveId) adapter.deleteClip(p.driveId).catch(() => {});
       }
       closeModal();
     } catch (e) {
@@ -725,8 +847,9 @@ export default function SettingsDiary() {
   const handleDelete = () => {
     const key = formatDateKey(selectedDate);
     const target = (entries[key] || []).find(e => e.id === selectedEntryId);
-    // ask about the Drive file only when there is one we can actually delete
-    if (target?.clipFile?.driveId && isSignedIn) {
+    // ask about Drive media only when there is something we can actually delete
+    const hasMedia = target?.clipFile?.driveId || (target?.photos || []).some(p => p.driveId);
+    if (hasMedia && isSignedIn) {
       setDeleteClipConfirm(true);
       return;
     }
@@ -757,21 +880,10 @@ export default function SettingsDiary() {
 
   // ── Share ──
   const buildShareText = (data, date) => {
-    // ミニマル路線: 絵文字なし。中黒「·」区切り、★メーター、ダッシュ見出し。
+    // ミニマル路線: 絵文字なし。中黒「·」区切り、ダッシュ見出し。
     const lines = [];
     const dateStr = formatDateKey(date).replace(/-/g, '.');
     const dow = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][date.getDay()];
-
-    // 見出し: ゲーム名 + ★メーター
-    if (data.game || data.rating > 0) {
-      const parts = [];
-      if (data.game) parts.push(data.game);
-      if (data.rating > 0) {
-        const f = Math.round(data.rating);
-        parts.push(`${'★'.repeat(f)}${'☆'.repeat(5 - f)} ${data.rating.toFixed(1)}`);
-      }
-      lines.push(parts.join('  '));
-    }
     lines.push(`${dateStr} (${dow})`);
 
     const mouseSpec = [];
@@ -779,22 +891,19 @@ export default function SettingsDiary() {
     if (data.sens) mouseSpec.push(`${data.sens} sens`);
     if (data.pollingRate) mouseSpec.push(`${data.pollingRate} Hz`);
     if (data.lod) mouseSpec.push(`LoD ${data.lod}`);
-    if (data.mouse || mouseSpec.length) {
-      lines.push('');
-      if (data.mouse) lines.push(`Mouse — ${data.mouse}`);
-      if (mouseSpec.length) lines.push(mouseSpec.join(' · '));
-    }
-    if (data.mousepad) lines.push(`Pad — ${data.mousepad}`);
-
     const kbSpec = [];
     if (data.kbAp) kbSpec.push(`AP ${data.kbAp}`);
     if (data.kbRt) kbSpec.push(`RT ${data.kbRt}`);
     if (data.kbPollingRate) kbSpec.push(`${data.kbPollingRate} Hz`);
-    if (data.keyboard || kbSpec.length) {
-      lines.push('');
-      if (data.keyboard) lines.push(`Keyboard — ${data.keyboard}`);
-      if (kbSpec.length) lines.push(kbSpec.join(' · '));
-    }
+
+    // ギアは1ブロックにまとめる(間に空行を入れない)
+    const gear = [];
+    if (data.mouse) gear.push(`Mouse — ${data.mouse}`);
+    if (mouseSpec.length) gear.push(mouseSpec.join(' · '));
+    if (data.mousepad) gear.push(`Pad — ${data.mousepad}`);
+    if (data.keyboard) gear.push(`Keyboard — ${data.keyboard}`);
+    if (kbSpec.length) gear.push(kbSpec.join(' · '));
+    if (gear.length) { lines.push(''); lines.push(...gear); }
 
     if (data.memo && data.memo.trim()) {
       lines.push('');
@@ -803,7 +912,6 @@ export default function SettingsDiary() {
     }
 
     lines.push('');
-    lines.push('VILDUP — Setup Diary for Gamers');
     lines.push('#VILDUP');
     return lines.join('\n');
   };
@@ -833,29 +941,43 @@ export default function SettingsDiary() {
   //  - the video is downloaded AUTOMATICALLY when the share menu opens
   //  - mobile: one tap opens the share sheet with the file (pick X there)
   //  - PC: one click saves the .mp4 and opens the X composer (drag & drop)
-  const prepareVideoShare = async () => {
-    const clip = formData.clipFile;
-    if (!clip || (!clip.blobUrl && !clip.driveId)) return null;
-    if (!clip.blobUrl && !isSignedIn) {
-      setImportNotice({ ok: false, msg: '動画付きポストには Google ログインが必要です' });
+  // 共有対象メディア(動画 + 全写真)の署名と一覧
+  const mediaList = (fd) => {
+    const items = [];
+    if (fd.clipFile && (fd.clipFile.blobUrl || fd.clipFile.driveId)) {
+      items.push({ blobUrl: fd.clipFile.blobUrl, driveId: fd.clipFile.driveId, name: fd.clipFile.name || 'clip.mp4', type: fd.clipFile.type || 'video/mp4' });
+    }
+    for (const p of (fd.photos || [])) {
+      if (p.blobUrl || p.driveId) items.push({ blobUrl: p.blobUrl, driveId: p.driveId, name: p.name || 'photo.jpg', type: p.type || 'image/jpeg' });
+    }
+    return items;
+  };
+  const mediaKey = (fd) => mediaList(fd).map((m) => m.driveId || m.blobUrl).join('|');
+
+  const prepareMediaShare = async () => {
+    const items = mediaList(formData);
+    if (!items.length) return null;
+    if (items.some((m) => !m.blobUrl) && !isSignedIn) {
+      setImportNotice({ ok: false, msg: 'メディア付きポストには Google ログインが必要です' });
       return null;
     }
-    const clipId = clip.driveId || clip.blobUrl;
-    if (videoShare.file && videoShare.clipId === clipId) return videoShare.file;
+    const key = mediaKey(formData);
+    if (videoShare.files && videoShare.key === key) return videoShare.files;
     if (videoSharePrepRef.current) return videoSharePrepRef.current;
     const job = (async () => {
-      setVideoShare({ status: 'preparing', file: null, clipId });
+      setVideoShare({ status: 'preparing', files: null, key });
       try {
-        const blob = clip.blobUrl
-          ? await (await fetch(clip.blobUrl)).blob()
-          : await getClipBlob(clip.driveId);
-        const file = new File([blob], clip.name || 'clip.mp4', { type: clip.type || 'video/mp4' });
-        setVideoShare({ status: 'ready', file, clipId });
-        return file;
+        const files = [];
+        for (const m of items) {
+          const blob = m.blobUrl ? await (await fetch(m.blobUrl)).blob() : await getClipBlob(m.driveId);
+          files.push(new File([blob], m.name, { type: m.type }));
+        }
+        setVideoShare({ status: 'ready', files, key });
+        return files;
       } catch (e) {
-        console.error('Video share prepare error:', e);
-        setVideoShare({ status: 'idle', file: null, clipId: null });
-        setImportNotice({ ok: false, msg: '動画の準備に失敗しました' });
+        console.error('Media share prepare error:', e);
+        setVideoShare({ status: 'idle', files: null, key: null });
+        setImportNotice({ ok: false, msg: 'メディアの準備に失敗しました' });
         return null;
       } finally {
         videoSharePrepRef.current = null;
@@ -866,47 +988,44 @@ export default function SettingsDiary() {
   };
 
   const shareVideoToX = async () => {
-    const clip = formData.clipFile;
-    const clipId = clip?.driveId || clip?.blobUrl;
-    let file = videoShare.clipId === clipId ? videoShare.file : null;
-    if (!file) file = await prepareVideoShare();
-    if (!file) return;
+    const key = mediaKey(formData);
+    let files = videoShare.key === key ? videoShare.files : null;
+    if (!files) files = await prepareMediaShare();
+    if (!files || !files.length) return;
     let text = buildShareText(formData, selectedDate);
     if (formData.clipUrl && formData.clipUrl.trim()) text += `\n${formData.clipUrl.trim()}`;
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    if (navigator.canShare && navigator.canShare({ files })) {
       try {
-        await navigator.share({ files: [file], text });
+        await navigator.share({ files, text });
         setShareOpen(false);
-        setVideoShare({ status: 'idle', file: null, clipId: null });
+        setVideoShare({ status: 'idle', files: null, key: null });
       } catch (e) {
         if (e && e.name === 'NotAllowedError') {
-          // gesture expired while downloading — the file is ready now
           setImportNotice({ ok: false, msg: '準備ができました。もう一度タップすると共有シートが開きます(共有先で X を選択)' });
         }
-        // AbortError = user closed the sheet; keep the file for a retry
+        // AbortError = user closed the sheet; keep the files for a retry
       }
     } else {
-      // PC: save the file + open the X composer; the user drops the file in
-      const url = URL.createObjectURL(file);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = file.name;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      // PC: save the files + open the X composer; the user drops them in
+      for (const file of files) {
+        const url = URL.createObjectURL(file);
+        const a = document.createElement('a');
+        a.href = url; a.download = file.name;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+      }
       window.open(`https://x.com/intent/tweet?${new URLSearchParams({ text })}`, '_blank', 'noopener,noreferrer');
-      setImportNotice({ ok: true, msg: '動画を保存しました。開いた X の投稿画面に動画ファイルをドラッグ&ドロップしてください。' });
+      setImportNotice({ ok: true, msg: `メディアを保存しました(${files.length}件)。開いた X の投稿画面にドラッグ&ドロップしてください。` });
       setTimeout(() => setImportNotice(null), 8000);
     }
   };
 
-  // start the download the moment the share menu opens — by the time the
-  // user taps the post button the file is usually ready (single-tap share)
+  // start downloading the moment the share menu opens — by the time the user
+  // taps the post button the files are usually ready (single-tap share)
   useEffect(() => {
-    const clip = formData.clipFile;
-    if (shareOpen && clip && (clip.blobUrl || (clip.driveId && isSignedIn))) {
-      prepareVideoShare();
+    const items = mediaList(formData);
+    if (shareOpen && items.length && (items.every((m) => m.blobUrl) || isSignedIn)) {
+      prepareMediaShare();
     }
   }, [shareOpen]);
 
@@ -1715,6 +1834,21 @@ export default function SettingsDiary() {
                         </div>
                       )}
 
+                      {(entry.photos || []).length > 0 && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {entry.photos.map((p, pi) => (
+                            <img
+                              key={p.driveId || pi}
+                              src={p.thumb}
+                              alt=""
+                              onClick={(e) => { e.stopPropagation(); openPhoto(p); }}
+                              onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                              className="w-[72px] h-[72px] object-cover rounded-[3px] border bd-line cursor-pointer lift"
+                            />
+                          ))}
+                        </div>
+                      )}
+
                       {entry.clipUrl && (
                         <a
                           href={entry.clipUrl}
@@ -2080,6 +2214,18 @@ export default function SettingsDiary() {
               />
             )}
           </div>
+        </div>
+      )}
+
+      {/* ── Photo lightbox ── */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/80 anim-backdrop flex items-center justify-center p-4"
+          onClick={() => { if (lightbox.revoke && lightbox.url) URL.revokeObjectURL(lightbox.url); setLightbox(null); }}
+        >
+          {lightbox.loading
+            ? <span className="text-white/80 text-[12px]" style={{ letterSpacing: '.1em' }}>読み込み中…</span>
+            : <img src={lightbox.url} alt="" className="max-w-full max-h-full object-contain rounded-[2px] anim-pop" onClick={(e) => e.stopPropagation()} />}
         </div>
       )}
 
@@ -2474,6 +2620,64 @@ export default function SettingsDiary() {
                   value={formData.memo}
                   onChange={(e) => setFormData({ ...formData, memo: e.target.value })}
                 />
+
+                {/* Photos (multiple, Drive-backed; counts toward the 4-media cap with the clip) */}
+                <input
+                  ref={photoInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={(e) => { acceptPhotos(e.target.files); e.target.value = ''; }}
+                  className="hidden"
+                />
+                <div className="mt-3 flex flex-wrap gap-2.5">
+                  {(formData.photos || []).map((p) => (
+                    <div key={p.id || p.driveId} className="relative w-[72px] h-[72px] rounded-[3px] overflow-hidden border bd-line bg-perisofter group">
+                      {(p.thumb || p.blobUrl) ? (
+                        <img
+                          src={p.thumb || p.blobUrl}
+                          alt={p.name || ''}
+                          onClick={() => openPhoto(p)}
+                          className="w-full h-full object-cover cursor-pointer"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center"><Film className="w-4 h-4 tk-faint" strokeWidth={1.5} /></div>
+                      )}
+                      {p.status === 'uploading' && (
+                        <div className="absolute inset-0 bg-black/45 flex items-center justify-center">
+                          <span className="sd-num text-[10px] text-white">{p.progress || 0}%</span>
+                        </div>
+                      )}
+                      {p.status === 'error' && (
+                        <div className="absolute inset-0 bg-black/55 flex items-center justify-center">
+                          <AlertCircle className="w-4 h-4 text-white" strokeWidth={1.5} />
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => removePhoto(p.id)}
+                        className="absolute top-0.5 right-0.5 w-5 h-5 rounded-full bg-black/55 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
+                        title="削除"
+                      >
+                        <X className="w-3 h-3" strokeWidth={2} />
+                      </button>
+                    </div>
+                  ))}
+                  {mediaCount(formData) < MEDIA_MAX && (
+                    <button
+                      type="button"
+                      onClick={() => isSignedIn ? photoInputRef.current?.click() : setImportNotice({ ok: false, msg: '写真の保存には Google ログインが必要です' })}
+                      className="w-[72px] h-[72px] rounded-[3px] border border-dashed bd-line hbd-acc flex flex-col items-center justify-center gap-1 tk-dim h-acc transition press"
+                      title="写真を追加"
+                    >
+                      <Plus className="w-4 h-4" strokeWidth={1.5} />
+                      <span className="text-[8px] uppercase" style={{ letterSpacing: '.14em' }}>写真</span>
+                    </button>
+                  )}
+                </div>
+                <div className="text-[9px] tk-faint mt-1.5" style={{ letterSpacing: '.06em' }}>
+                  写真・動画は合計 {MEDIA_MAX} つまで（残り {Math.max(0, MEDIA_MAX - mediaCount(formData))}）。共有時はテキストと一緒に投稿できます。
+                </div>
               </div>
 
               {/* 07 — Clip */}
@@ -2635,12 +2839,12 @@ export default function SettingsDiary() {
                 <>
                   <div className="text-[11px] flex items-center gap-2 min-w-0">
                     <AlertCircle className="w-4 h-4 tk-acc shrink-0" strokeWidth={1.5} />
-                    <span>Drive 上のクリップ動画も削除しますか?</span>
+                    <span>Drive 上のメディア(動画・写真)も削除しますか?</span>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
                     <button onClick={() => setDeleteClipConfirm(false)} className="sd-tbtn">キャンセル</button>
                     <button onClick={() => performDelete(false)} className="sd-tbtn">記録のみ削除</button>
-                    <button onClick={() => performDelete(true)} className="sd-tbtn on">クリップも削除</button>
+                    <button onClick={() => performDelete(true)} className="sd-tbtn on">メディアも削除</button>
                   </div>
                 </>
               ) : (
@@ -2693,15 +2897,15 @@ export default function SettingsDiary() {
                             </>
                           )}
                         </button>
-                        {(formData.clipFile?.driveId || formData.clipFile?.blobUrl) && (
+                        {mediaList(formData).length > 0 && (
                           <button
                             onClick={shareVideoToX}
                             disabled={videoShare.status === 'preparing'}
-                            className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2 disabled:opacity-50"
+                            className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2 disabled:opacity-50 press"
                           >
                             <span className="w-5 h-5 flex items-center justify-center border bd-ink rounded-[2px] text-[10px] font-bold shrink-0">𝕏</span>
                             <span className="flex-1">
-                              {videoShare.status === 'preparing' ? '動画を準備中…' : '動画付きでポスト'}
+                              {videoShare.status === 'preparing' ? 'メディアを準備中…' : 'メディア付きでポスト'}
                             </span>
                             <Film className={`w-4 h-4 shrink-0 ${videoShare.status === 'ready' ? 'tk-acc' : 'tk-faint'}`} strokeWidth={1.5} />
                           </button>
