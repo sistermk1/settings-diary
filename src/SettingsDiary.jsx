@@ -757,44 +757,53 @@ export default function SettingsDiary() {
 
   // ── Share ──
   const buildShareText = (data, date) => {
+    // ミニマル路線: 絵文字なし。中黒「·」区切り、★メーター、ダッシュ見出し。
     const lines = [];
-    const dateStr = formatDateKey(date);
+    const dateStr = formatDateKey(date).replace(/-/g, '.');
     const dow = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][date.getDay()];
-    lines.push(`📅 ${dateStr} (${dow})`);
+
+    // 見出し: ゲーム名 + ★メーター
     if (data.game || data.rating > 0) {
-      let gl = '🎮';
-      if (data.game) gl += ` ${data.game}`;
-      if (data.rating > 0) gl += `  ★${data.rating.toFixed(1)}/5.0`;
-      lines.push(gl);
+      const parts = [];
+      if (data.game) parts.push(data.game);
+      if (data.rating > 0) {
+        const f = Math.round(data.rating);
+        parts.push(`${'★'.repeat(f)}${'☆'.repeat(5 - f)} ${data.rating.toFixed(1)}`);
+      }
+      lines.push(parts.join('  '));
     }
-    const hasMouse = data.mouse || data.dpi || data.sens || data.pollingRate || data.lod;
-    if (hasMouse) {
+    lines.push(`${dateStr} (${dow})`);
+
+    const mouseSpec = [];
+    if (data.dpi) mouseSpec.push(`${data.dpi} dpi`);
+    if (data.sens) mouseSpec.push(`${data.sens} sens`);
+    if (data.pollingRate) mouseSpec.push(`${data.pollingRate} Hz`);
+    if (data.lod) mouseSpec.push(`LoD ${data.lod}`);
+    if (data.mouse || mouseSpec.length) {
       lines.push('');
-      if (data.mouse) lines.push(`🖱 ${data.mouse}`);
-      const s = [];
-      if (data.dpi) s.push(`${data.dpi} DPI`);
-      if (data.sens) s.push(`sens ${data.sens}`);
-      if (data.pollingRate) s.push(`${data.pollingRate}Hz`);
-      if (data.lod) s.push(`LoD ${data.lod}`);
-      if (s.length) lines.push(`  ${s.join(' / ')}`);
+      if (data.mouse) lines.push(`Mouse — ${data.mouse}`);
+      if (mouseSpec.length) lines.push(mouseSpec.join(' · '));
     }
-    if (data.mousepad) lines.push(`🟦 ${data.mousepad}`);
-    const hasKb = data.keyboard || data.kbAp || data.kbRt || data.kbPollingRate;
-    if (hasKb) {
+    if (data.mousepad) lines.push(`Pad — ${data.mousepad}`);
+
+    const kbSpec = [];
+    if (data.kbAp) kbSpec.push(`AP ${data.kbAp}`);
+    if (data.kbRt) kbSpec.push(`RT ${data.kbRt}`);
+    if (data.kbPollingRate) kbSpec.push(`${data.kbPollingRate} Hz`);
+    if (data.keyboard || kbSpec.length) {
       lines.push('');
-      if (data.keyboard) lines.push(`⌨ ${data.keyboard}`);
-      const k = [];
-      if (data.kbAp) k.push(`AP ${data.kbAp}`);
-      if (data.kbRt) k.push(`RT ${data.kbRt}`);
-      if (data.kbPollingRate) k.push(`${data.kbPollingRate}Hz`);
-      if (k.length) lines.push(`  ${k.join(' / ')}`);
+      if (data.keyboard) lines.push(`Keyboard — ${data.keyboard}`);
+      if (kbSpec.length) lines.push(kbSpec.join(' · '));
     }
+
     if (data.memo && data.memo.trim()) {
       lines.push('');
       const memo = data.memo.trim();
-      lines.push(memo.length > 100 ? memo.slice(0, 97) + '...' : memo);
+      lines.push(`“${memo.length > 100 ? memo.slice(0, 97) + '…' : memo}”`);
     }
+
     lines.push('');
+    lines.push('VILDUP — Setup Diary for Gamers');
     lines.push('#VILDUP');
     return lines.join('\n');
   };
