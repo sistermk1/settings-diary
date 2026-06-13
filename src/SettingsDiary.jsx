@@ -79,6 +79,8 @@ export default function SettingsDiary() {
   const [anGame, setAnGame] = useState('ALL'); // Analysis tab game filter
   const [ads, setAds] = useState(AFFILIATES); // affiliate banners (WP-managed, static fallback)
   const [infoPage, setInfoPage] = useState(null); // WP page modal: { kind, title, html|null(loading) }
+  const [guideOpen, setGuideOpen] = useState(false); // welcome guide modal
+  const [guideStep, setGuideStep] = useState(0); // current slide
   const uploadRef = useRef(null); // in-flight clip upload: { file, abort, driveId, saved }
   const preloadRef = useRef({ cache: new Map(), queue: [], running: false }); // PC only: prefetched clip Blobs (driveId → Blob)
   const videoSharePrepRef = useRef(null); // de-dupes concurrent share preparations
@@ -99,10 +101,17 @@ export default function SettingsDiary() {
         if (data.entries && Object.keys(data.entries).length) setEntries(data.entries);
         if (Array.isArray(data.customGames) && data.customGames.length) setCustomGames(data.customGames);
 
+        // First launch: show the welcome guide once (re-openable from the menu)
+        const guideSeen = await storage.get('welcomeGuideSeen');
+        if (!guideSeen) {
+          setGuideStep(0);
+          setGuideOpen(true);
+        }
+
         // iOS Safari has no install prompt — guide once to 共有 → ホーム画面に追加 (spec §6)
         const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
         const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-        if (isIos && !standalone) {
+        if (isIos && !standalone && guideSeen) {
           const dismissed = await storage.get('iosInstallHintDismissed');
           if (!dismissed) setIosInstallHint(true);
         }
@@ -146,6 +155,41 @@ export default function SettingsDiary() {
     });
     return () => { alive = false; };
   }, []);
+
+  // ── Welcome guide (first run, re-openable from menu) ──
+  const GUIDE_SLIDES = [
+    {
+      icon: 'logo',
+      title: 'VILDUP へようこそ',
+      body: '日々のセットアップを記録して、自分だけの最適解を積み上げていく「セットアップ日記」です。',
+    },
+    {
+      icon: CalendarDays,
+      title: '記録する',
+      body: '日付をタップして、マウス・感度・キーボード設定と、その日の手応えを評価(★)で記録しましょう。',
+    },
+    {
+      icon: Cloud,
+      title: '同期 & クリップ',
+      body: 'Google ログインで PC とスマホの記録を同期。プレイ動画も添付できます(動画はあなた自身の Google Drive に保存されます)。',
+    },
+    {
+      icon: Gem,
+      title: '続けるほど見えてくる',
+      body: 'Record で記録した日数に応じて称号を集め、Analysis で「勝てた日の構成」を分析。ホーム画面に追加すればアプリとして使えます。',
+    },
+  ];
+
+  const openGuide = () => {
+    setMenuOpen(false);
+    setGuideStep(0);
+    setGuideOpen(true);
+  };
+
+  const closeGuide = async () => {
+    setGuideOpen(false);
+    try { await storage.set('welcomeGuideSeen', '1'); } catch (e) {}
+  };
 
   const openInfoPage = (kind) => {
     setMenuOpen(false);
@@ -1264,6 +1308,12 @@ export default function SettingsDiary() {
                     {theme === 'light' ? 'ダークモード' : 'ライトモード'}
                   </button>
                   <button
+                    onClick={openGuide}
+                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2"
+                  >
+                    <Info className="w-4 h-4 tk-dim" strokeWidth={1.5} /> 使い方
+                  </button>
+                  <button
                     onClick={() => openInfoPage('about')}
                     className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2"
                   >
@@ -1932,6 +1982,70 @@ export default function SettingsDiary() {
           <span>{(isSignedIn ? 'Drive sync' : 'Local mode') + ' · α 0.0.1'}</span>
         </div>
       </div>
+
+      {/* ── Welcome guide (first run + menu) ── */}
+      {guideOpen && (() => {
+        const slide = GUIDE_SLIDES[guideStep];
+        const Icon = slide.icon;
+        const isLast = guideStep === GUIDE_SLIDES.length - 1;
+        return (
+          <div className="fixed inset-0 z-50 bg-backdrop flex items-center justify-center p-4">
+            <div className="bg-modal border bd-line rounded-[3px] w-full max-w-sm overflow-hidden">
+              <div className="px-7 pt-9 pb-7 text-center">
+                <div className="w-16 h-16 mx-auto mb-6 rounded-[14px] bg-perisoft flex items-center justify-center">
+                  {Icon === 'logo'
+                    ? <img src="/favicon.svg" alt="" className="w-11 h-11 rounded-[9px]" />
+                    : <Icon className="w-7 h-7 tk-acc" strokeWidth={1.4} />}
+                </div>
+                <h3 className="text-[17px] font-medium mb-3" style={{ letterSpacing: '.04em' }}>{slide.title}</h3>
+                <p className="text-[13px] tk-dim leading-relaxed min-h-[78px]">{slide.body}</p>
+              </div>
+
+              <div className="flex justify-center gap-1.5 pb-6">
+                {GUIDE_SLIDES.map((_, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setGuideStep(i)}
+                    className="h-1.5 rounded-full transition-all"
+                    style={{
+                      width: i === guideStep ? '20px' : '6px',
+                      background: i === guideStep ? 'var(--accent)' : 'var(--line2)',
+                    }}
+                    aria-label={`スライド ${i + 1}`}
+                  />
+                ))}
+              </div>
+
+              <div className="border-t bd-line px-5 py-4 flex items-center justify-between gap-3">
+                {isLast ? (
+                  <span className="text-[11px] tk-faint">{guideStep + 1} / {GUIDE_SLIDES.length}</span>
+                ) : (
+                  <button onClick={closeGuide} className="text-[11px] tk-dim h-acc transition px-2" style={{ letterSpacing: '.08em' }}>
+                    スキップ
+                  </button>
+                )}
+                {isLast ? (
+                  <button
+                    onClick={closeGuide}
+                    className="px-6 py-2.5 text-[10px] uppercase rounded-[2px] border bg-acc tk-onacc bd-acc transition flex items-center gap-2"
+                    style={{ letterSpacing: '.16em' }}
+                  >
+                    はじめる
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setGuideStep((s) => s + 1)}
+                    className="px-6 py-2.5 text-[10px] uppercase rounded-[2px] border bg-acc tk-onacc bd-acc transition flex items-center gap-2"
+                    style={{ letterSpacing: '.16em' }}
+                  >
+                    次へ <ChevronRight className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── WP info page modal (about / privacy — edited in WordPress) ── */}
       {infoPage && (
