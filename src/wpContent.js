@@ -21,6 +21,7 @@ const SLUGS = {
   about: ['about', 'vildup-about'],
   privacy: ['privacy-policy', 'vildup-privacy'],
   ads: ['広告関連', 'vildup-ads', 'ads'],
+  adpolicy: ['広告ポリシー', 'ad-policy', 'vildup-adpolicy'],
 };
 
 async function readCache(key) {

@@ -207,7 +207,7 @@ export default function SettingsDiary() {
 
   const openInfoPage = (kind) => {
     setMenuOpen(false);
-    const fallbackTitle = kind === 'about' ? 'このアプリについて' : 'プライバシーポリシー';
+    const fallbackTitle = { about: 'このアプリについて', privacy: 'プライバシーポリシー', adpolicy: '広告ポリシー' }[kind] || '';
     setInfoPage({ kind, title: fallbackTitle, html: null });
     wp.loadPage(kind, (page) => {
       setInfoPage((prev) => {
@@ -1922,19 +1922,9 @@ export default function SettingsDiary() {
               {recordStats.praise}
             </div>
 
-            <div className="grid grid-cols-3 gap-3 sm:gap-4">
-              <div className="border bd-line rounded-[2px] p-4">
-                <div className="text-[8px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.18em' }}>現在ストリーク</div>
-                <div className="sd-num text-[26px] font-light">{recordStats.currentStreak}<span className="text-[12px] tk-dim ml-1">日</span></div>
-              </div>
-              <div className="border bd-line rounded-[2px] p-4">
-                <div className="text-[8px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.18em' }}>自己最長</div>
-                <div className="sd-num text-[26px] font-light">{recordStats.longestStreak}<span className="text-[12px] tk-dim ml-1">日</span></div>
-              </div>
-              <div className="border bd-line rounded-[2px] p-4">
-                <div className="text-[8px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.18em' }}>累計記録日</div>
-                <div className="sd-num text-[26px] font-light">{recordStats.totalDays}<span className="text-[12px] tk-dim ml-1">日</span></div>
-              </div>
+            <div className="border bd-line rounded-[2px] p-4">
+              <div className="text-[8px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.18em' }}>累計記録日数</div>
+              <div className="sd-num text-[26px] font-light">{recordStats.totalDays}<span className="text-[12px] tk-dim ml-1">日</span></div>
             </div>
 
             <div>
@@ -1960,7 +1950,7 @@ export default function SettingsDiary() {
 
             {!recordStats.loggedToday && (
               <div className="flex items-center justify-between gap-3 flex-wrap border bd-acc rounded-[2px] px-4 py-3 bg-perisofter">
-                <span className="text-[12px]">今日はまだ記録していません。1件記録してストリークを継続しましょう。</span>
+                <span className="text-[12px]">今日はまだ記録していません。1件記録して累計を伸ばしましょう。</span>
                 <button onClick={() => { setView('calendar'); openDate(new Date()); }} className="sd-tbtn on">今日を記録</button>
               </div>
             )}
@@ -2120,6 +2110,16 @@ export default function SettingsDiary() {
         <div className="mt-5 text-[9px] tk-faint uppercase flex justify-between flex-wrap gap-2" style={{ letterSpacing: '.18em' }}>
           <span>{isSignedIn ? '日付を選択して記録 — Google Drive と同期' : '日付を選択して記録 — ローカル保存(ログインなしで全機能利用可)'}</span>
           <span>{(isSignedIn ? 'Drive sync' : 'Local mode') + ' · α 0.0.1'}</span>
+        </div>
+
+        {/* Legal footer — affiliate disclosure + copyright */}
+        <div className="mt-3 pt-3 border-t bd-line2 text-[10px] tk-faint flex items-center justify-between flex-wrap gap-2">
+          <span>
+            本サイトには PR・アフィリエイトリンクを含みます。詳しくは
+            <button onClick={() => openInfoPage('adpolicy')} className="tk-dim underline underline-offset-2 dec-peri hdec-acc h-acc transition">広告ポリシー</button>
+            をご覧ください。
+          </span>
+          <span className="sd-num">© 2026 MONE²</span>
         </div>
       </div>
 
