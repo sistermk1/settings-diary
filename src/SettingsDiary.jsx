@@ -78,6 +78,8 @@ export default function SettingsDiary() {
   const [tlPlayer, setTlPlayer] = useState(null); // timeline inline playback: { id, blobUrl, loading }
   const [anGame, setAnGame] = useState('ALL'); // Analysis tab game filter
   const [ads, setAds] = useState(AFFILIATES); // affiliate banners (WP-managed, static fallback)
+  const [adIndex, setAdIndex] = useState(0); // PR slider current slide
+  const adTouchX = useRef(null);
   const [infoPage, setInfoPage] = useState(null); // WP page modal: { kind, title, html|null(loading) }
   const [guideOpen, setGuideOpen] = useState(false); // welcome guide modal
   const [guideStep, setGuideStep] = useState(0); // current slide
@@ -151,10 +153,17 @@ export default function SettingsDiary() {
   useEffect(() => {
     let alive = true;
     wp.loadAds((list) => {
-      if (alive && Array.isArray(list)) setAds(list);
+      if (alive && Array.isArray(list)) { setAds(list); setAdIndex(0); }
     });
     return () => { alive = false; };
   }, []);
+
+  // PR スライダーの自動送り(2枚以上のとき。5秒ごと)
+  useEffect(() => {
+    if (ads.length <= 1) return;
+    const t = setInterval(() => setAdIndex((i) => (i + 1) % ads.length), 5000);
+    return () => clearInterval(t);
+  }, [ads.length]);
 
   // ── Welcome guide (first run, re-openable from menu) ──
   const GUIDE_SLIDES = [
@@ -1198,29 +1207,62 @@ export default function SettingsDiary() {
           </div>
         </header>
 
-        {/* PR / affiliate slot — managed in WordPress (vildup-ads page), src/affiliates.js as fallback */}
+        {/* PR / affiliate slider — managed in WordPress (広告関連 page), src/affiliates.js as fallback */}
         {ads.length > 0 && (
           <div className="mb-5">
             <div className="text-[8px] tk-faint uppercase mb-1.5" style={{ letterSpacing: '.24em' }}>PR</div>
-            <div className="flex gap-3 flex-wrap items-center">
-              {ads.map((ad, i) => (
-                <a
-                  key={i}
-                  href={ad.href}
-                  target="_blank"
-                  rel="noopener noreferrer sponsored"
-                  className="block border bd-line rounded-[2px] overflow-hidden hbd-acc transition"
-                >
-                  {ad.img ? (
-                    <img src={ad.img} alt={ad.alt || ''} className="block max-h-[90px] w-auto" />
-                  ) : (
-                    <span className="text-[11px] tk-acc underline underline-offset-2 dec-peri hdec-acc px-3.5 py-2.5 inline-block">
-                      {ad.text} ↗
-                    </span>
-                  )}
-                </a>
-              ))}
+            <div
+              className="relative overflow-hidden rounded-[2px] border bd-line"
+              onTouchStart={(e) => { adTouchX.current = e.touches[0].clientX; }}
+              onTouchEnd={(e) => {
+                if (adTouchX.current == null || ads.length <= 1) return;
+                const dx = e.changedTouches[0].clientX - adTouchX.current;
+                if (dx > 40) setAdIndex((i) => (i - 1 + ads.length) % ads.length);
+                else if (dx < -40) setAdIndex((i) => (i + 1) % ads.length);
+                adTouchX.current = null;
+              }}
+            >
+              <div
+                className="flex transition-transform duration-500 ease-out"
+                style={{ transform: `translateX(-${adIndex * 100}%)` }}
+              >
+                {ads.map((ad, i) => (
+                  <a
+                    key={i}
+                    href={ad.href}
+                    target="_blank"
+                    rel="noopener noreferrer sponsored"
+                    className="block w-full shrink-0"
+                    aria-hidden={i !== adIndex}
+                    tabIndex={i === adIndex ? 0 : -1}
+                  >
+                    {ad.img ? (
+                      <img src={ad.img} alt={ad.alt || ''} className="block w-full" draggable={false} />
+                    ) : (
+                      <span className="flex items-center justify-center min-h-[80px] text-[12px] tk-acc underline underline-offset-2 dec-peri hdec-acc px-3.5 py-2.5">
+                        {ad.text} ↗
+                      </span>
+                    )}
+                  </a>
+                ))}
+              </div>
             </div>
+            {ads.length > 1 && (
+              <div className="flex justify-center gap-1.5 mt-2">
+                {ads.map((_, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setAdIndex(i)}
+                    className="h-1.5 rounded-full transition-all"
+                    style={{
+                      width: i === adIndex ? '18px' : '6px',
+                      background: i === adIndex ? 'var(--accent)' : 'var(--line2)',
+                    }}
+                    aria-label={`PR ${i + 1}`}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )}
 
