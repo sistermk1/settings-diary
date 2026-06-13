@@ -1266,14 +1266,20 @@ export default function SettingsDiary() {
           </div>
         )}
 
-        {/* Toolbar: tabs (desktop — mobile uses the bottom nav) + data/theme controls */}
-        <div className="mb-5 flex items-center justify-between gap-3 flex-wrap">
-          <div className="hidden sm:flex gap-2">
+        {/* Toolbar: desktop only (mobile uses the bottom nav incl. Menu) */}
+        <input
+          ref={importInputRef}
+          type="file"
+          accept="application/json,.json"
+          onChange={handleImportFile}
+          className="hidden"
+        />
+        <div className="mb-5 hidden sm:flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex gap-2">
             {[
               { id: 'calendar', label: 'Calendar' },
               { id: 'timeline', label: 'Timeline' },
-              { id: 'record', label: 'Record' },
-              { id: 'analysis', label: 'Analysis' },
+              { id: 'stats', label: 'Stats' },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -1284,14 +1290,7 @@ export default function SettingsDiary() {
               </button>
             ))}
           </div>
-          <div className="ml-auto flex gap-2 items-center relative">
-            <input
-              ref={importInputRef}
-              type="file"
-              accept="application/json,.json"
-              onChange={handleImportFile}
-              className="hidden"
-            />
+          <div className="ml-auto flex gap-2 items-center">
             {isSignedIn && (
               <span
                 className="text-[9px] uppercase tk-dim flex items-center gap-1.5 px-1"
@@ -1301,75 +1300,12 @@ export default function SettingsDiary() {
                 {syncStatus === 'offline' || syncStatus === 'error' || syncStatus === 'needs-login'
                   ? <CloudOff className="w-3.5 h-3.5" strokeWidth={1.5} />
                   : <Cloud className="w-3.5 h-3.5 tk-acc" strokeWidth={1.5} />}
-                <span className="hidden sm:inline">{SYNC_LABELS[syncStatus] || syncStatus}</span>
+                <span>{SYNC_LABELS[syncStatus] || syncStatus}</span>
               </span>
             )}
-            <button onClick={() => setMenuOpen(!menuOpen)} className="sd-tbtn" title="メニュー">
+            <button onClick={() => setMenuOpen(true)} className="sd-tbtn" title="メニュー">
               <Menu className="w-3.5 h-3.5" strokeWidth={1.5} /> Menu
             </button>
-            {menuOpen && (
-              <>
-                <div className="fixed inset-0 z-30" onClick={() => setMenuOpen(false)} />
-                <div className="absolute top-full right-0 mt-1 border bd-line rounded-[2px] bg-modal shadow-xl shadow-black/10 z-40 min-w-[220px]">
-                  {isSignedIn ? (
-                    <button
-                      onClick={() => { setMenuOpen(false); setLogoutConfirm(true); }}
-                      className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left"
-                    >
-                      <LogOut className="w-4 h-4 tk-dim" strokeWidth={1.5} /> Google からログアウト
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => { setMenuOpen(false); handleLogin(); }}
-                      disabled={authBusy}
-                      className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left disabled:opacity-50"
-                      title="未ログインでもローカルモードで全機能を使用できます"
-                    >
-                      <LogIn className="w-4 h-4 tk-dim" strokeWidth={1.5} /> {authBusy ? '接続中…' : 'Google でログイン'}
-                    </button>
-                  )}
-                  <button
-                    onClick={() => { setMenuOpen(false); handleExport(); }}
-                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2"
-                  >
-                    <Download className="w-4 h-4 tk-dim" strokeWidth={1.5} /> Export(JSON)
-                  </button>
-                  <button
-                    onClick={() => { setMenuOpen(false); importInputRef.current?.click(); }}
-                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2"
-                  >
-                    <Upload className="w-4 h-4 tk-dim" strokeWidth={1.5} /> Import(JSON)
-                  </button>
-                  <button
-                    onClick={() => { setMenuOpen(false); toggleTheme(); }}
-                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2"
-                  >
-                    {theme === 'light'
-                      ? <Moon className="w-4 h-4 tk-dim" strokeWidth={1.5} />
-                      : <Sun className="w-4 h-4 tk-dim" strokeWidth={1.5} />}
-                    {theme === 'light' ? 'ダークモード' : 'ライトモード'}
-                  </button>
-                  <button
-                    onClick={openGuide}
-                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2"
-                  >
-                    <Info className="w-4 h-4 tk-dim" strokeWidth={1.5} /> 使い方
-                  </button>
-                  <button
-                    onClick={() => openInfoPage('about')}
-                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2"
-                  >
-                    <Info className="w-4 h-4 tk-dim" strokeWidth={1.5} /> このアプリについて
-                  </button>
-                  <button
-                    onClick={() => openInfoPage('privacy')}
-                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-[12px] hbg-perisoft transition text-left border-t bd-line2"
-                  >
-                    <ShieldCheck className="w-4 h-4 tk-dim" strokeWidth={1.5} /> プライバシーポリシー
-                  </button>
-                </div>
-              </>
-            )}
           </div>
         </div>
 
@@ -1772,8 +1708,8 @@ export default function SettingsDiary() {
         )}
 
         {/* ── Record ── */}
-        {view === 'record' && (
-        <div className="border bd-line rounded-[2px] bg-card">
+        {view === 'stats' && (
+        <div className="border bd-line rounded-[2px] bg-card mb-5">
           <div className="px-6 py-5 border-b bd-line flex items-end justify-between flex-wrap gap-3">
             <div>
               <div className="text-[9px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.28em' }}>Record</div>
@@ -1894,7 +1830,7 @@ export default function SettingsDiary() {
         )}
 
         {/* ── Analysis ── */}
-        {view === 'analysis' && (
+        {view === 'stats' && (
         <div className="border bd-line rounded-[2px] bg-card">
           <div className="px-6 py-5 border-b bd-line">
             <div className="flex items-end justify-between flex-wrap gap-3">
@@ -2119,6 +2055,70 @@ export default function SettingsDiary() {
         </div>
       )}
 
+      {/* ── Menu (bottom sheet on mobile, centered panel on desktop) ── */}
+      {menuOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-backdrop flex items-end sm:items-center justify-center sm:p-4"
+          onClick={() => setMenuOpen(false)}
+        >
+          <div
+            className="bg-modal border bd-line rounded-t-[14px] sm:rounded-[3px] w-full sm:max-w-xs overflow-hidden"
+            style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b bd-line">
+              <span className="text-[9px] uppercase tk-dim flex items-center gap-1.5" style={{ letterSpacing: '.18em' }}>
+                {isSignedIn
+                  ? (syncStatus === 'offline' || syncStatus === 'error' || syncStatus === 'needs-login'
+                      ? <CloudOff className="w-3.5 h-3.5" strokeWidth={1.5} />
+                      : <Cloud className="w-3.5 h-3.5 tk-acc" strokeWidth={1.5} />)
+                  : null}
+                {isSignedIn ? (SYNC_LABELS[syncStatus] || syncStatus) : 'ローカルモード'}
+              </span>
+              <button onClick={() => setMenuOpen(false)} className="tk-dim h-acc transition" title="閉じる">
+                <X className="w-4 h-4" strokeWidth={1.5} />
+              </button>
+            </div>
+            {isSignedIn ? (
+              <button onClick={() => { setMenuOpen(false); setLogoutConfirm(true); }}
+                className="w-full flex items-center gap-3 px-4 py-3.5 text-[13px] hbg-perisoft transition text-left">
+                <LogOut className="w-4 h-4 tk-dim" strokeWidth={1.5} /> Google からログアウト
+              </button>
+            ) : (
+              <button onClick={() => { setMenuOpen(false); handleLogin(); }} disabled={authBusy}
+                className="w-full flex items-center gap-3 px-4 py-3.5 text-[13px] hbg-perisoft transition text-left disabled:opacity-50">
+                <LogIn className="w-4 h-4 tk-dim" strokeWidth={1.5} /> {authBusy ? '接続中…' : 'Google でログイン'}
+              </button>
+            )}
+            <button onClick={() => { setMenuOpen(false); handleExport(); }}
+              className="w-full flex items-center gap-3 px-4 py-3.5 text-[13px] hbg-perisoft transition text-left border-t bd-line2">
+              <Download className="w-4 h-4 tk-dim" strokeWidth={1.5} /> Export(JSON)
+            </button>
+            <button onClick={() => { setMenuOpen(false); importInputRef.current?.click(); }}
+              className="w-full flex items-center gap-3 px-4 py-3.5 text-[13px] hbg-perisoft transition text-left border-t bd-line2">
+              <Upload className="w-4 h-4 tk-dim" strokeWidth={1.5} /> Import(JSON)
+            </button>
+            <button onClick={() => { setMenuOpen(false); toggleTheme(); }}
+              className="w-full flex items-center gap-3 px-4 py-3.5 text-[13px] hbg-perisoft transition text-left border-t bd-line2">
+              {theme === 'light' ? <Moon className="w-4 h-4 tk-dim" strokeWidth={1.5} /> : <Sun className="w-4 h-4 tk-dim" strokeWidth={1.5} />}
+              {theme === 'light' ? 'ダークモード' : 'ライトモード'}
+            </button>
+            <button onClick={openGuide}
+              className="w-full flex items-center gap-3 px-4 py-3.5 text-[13px] hbg-perisoft transition text-left border-t bd-line2">
+              <Info className="w-4 h-4 tk-dim" strokeWidth={1.5} /> 使い方
+            </button>
+            <button onClick={() => openInfoPage('about')}
+              className="w-full flex items-center gap-3 px-4 py-3.5 text-[13px] hbg-perisoft transition text-left border-t bd-line2">
+              <Info className="w-4 h-4 tk-dim" strokeWidth={1.5} /> このアプリについて
+            </button>
+            <button onClick={() => openInfoPage('privacy')}
+              className="w-full flex items-center gap-3 px-4 py-3.5 text-[13px] hbg-perisoft transition text-left border-t bd-line2">
+              <ShieldCheck className="w-4 h-4 tk-dim" strokeWidth={1.5} /> プライバシーポリシー
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── Mobile bottom tab bar (app-like nav; desktop keeps the top tabs) ── */}
       <nav
         className="sm:hidden fixed bottom-0 inset-x-0 z-40 bg-modal border-t bd-line flex"
@@ -2127,20 +2127,21 @@ export default function SettingsDiary() {
         {[
           { id: 'calendar', label: 'Calendar', Icon: CalendarDays },
           { id: 'timeline', label: 'Timeline', Icon: History },
-          { id: 'record', label: 'Record', Icon: Gem },
-          { id: 'analysis', label: 'Analysis', Icon: TrendingUp },
-        ].map(({ id, label, Icon }) => (
-          <button
-            key={id}
-            onClick={() => setView(id)}
-            className={`flex-1 pt-2.5 pb-2 flex flex-col items-center gap-1 transition ${
-              view === id ? 'tk-acc' : 'tk-dim'
-            }`}
-          >
-            <Icon className="w-5 h-5" strokeWidth={view === id ? 2 : 1.5} />
-            <span className="text-[9px] uppercase font-medium" style={{ letterSpacing: '.18em' }}>{label}</span>
-          </button>
-        ))}
+          { id: 'stats', label: 'Stats', Icon: TrendingUp },
+          { id: 'menu', label: 'Menu', Icon: Menu, action: true },
+        ].map(({ id, label, Icon, action }) => {
+          const active = !action && view === id;
+          return (
+            <button
+              key={id}
+              onClick={() => action ? setMenuOpen(true) : setView(id)}
+              className={`flex-1 pt-2.5 pb-2 flex flex-col items-center gap-1 transition ${active ? 'tk-acc' : 'tk-dim'}`}
+            >
+              <Icon className="w-5 h-5" strokeWidth={active ? 2 : 1.5} />
+              <span className="text-[9px] uppercase font-medium" style={{ letterSpacing: '.18em' }}>{label}</span>
+            </button>
+          );
+        })}
       </nav>
 
       {/* ── Entry Modal ── */}
