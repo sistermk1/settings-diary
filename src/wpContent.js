@@ -39,15 +39,26 @@ async function writeCache(key, data) {
   } catch (e) {}
 }
 
-// 自分のブログとはいえ、script 等は描画前に落としておく
+// 自分のブログが情報源だが、多層防御として描画前に危険な要素・属性を除去する。
+// (XSS 対策: WP が万一改ざんされても、スクリプトや javascript:/data: 経由の実行を防ぐ)
 function sanitize(html) {
   const doc = new DOMParser().parseFromString(html || '', 'text/html');
-  for (const el of doc.querySelectorAll('script, iframe, object, embed')) el.remove();
+  // 実行・埋め込み・リダイレクト・スタイル注入につながる要素を除去
+  for (const el of doc.querySelectorAll('script, iframe, object, embed, link, meta, base, form, style, svg')) {
+    el.remove();
+  }
+  const BAD_URL = /^\s*(javascript|data|vbscript):/i;
   for (const el of doc.querySelectorAll('*')) {
     for (const attr of [...el.attributes]) {
-      if (/^on/i.test(attr.name) || (attr.name === 'href' && /^javascript:/i.test(attr.value))) {
-        el.removeAttribute(attr.name);
+      const name = attr.name.toLowerCase();
+      // on* イベントハンドラを全削除
+      if (/^on/.test(name)) { el.removeAttribute(attr.name); continue; }
+      // href/src/xlink:href などの危険スキームを無効化(画像の data: は許可)
+      if (/(href|src|action|formaction|xlink:href)$/.test(name) && BAD_URL.test(attr.value)) {
+        if (!(name === 'src' && /^\s*data:image\//i.test(attr.value))) el.removeAttribute(attr.name);
       }
+      // style 属性も注入面になり得るため除去
+      if (name === 'style') el.removeAttribute(attr.name);
     }
   }
   return doc.body.innerHTML;
