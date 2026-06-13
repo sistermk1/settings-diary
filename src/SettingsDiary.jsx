@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ChevronLeft, ChevronRight, X, Save, Trash2, Star, ChevronDown, Plus, Share2, Copy, Check, Upload, Film, AlertCircle, Download, Sun, Moon, Search, LogIn, LogOut, Cloud, CloudOff, CalendarDays, History, Share, Menu, Gem, TrendingUp, Info, ShieldCheck } from 'lucide-react';
+import { ChevronLeft, ChevronRight, X, Save, Trash2, Star, ChevronDown, Plus, Share2, Copy, Check, Upload, Film, AlertCircle, Download, Sun, Moon, Search, LogIn, LogOut, Cloud, CloudOff, CalendarDays, History, Share, Menu, Gem, TrendingUp, Info, ShieldCheck, Globe } from 'lucide-react';
 import { AFFILIATES } from './affiliates';
 import * as wp from './wpContent';
+import { makeT, detectLang, LANGS } from './i18n';
 import { computeRecordStats, computeAnalysis, drawRecordCard, drawAnalysisCard } from './stats';
 import { storage } from './storage';
 import * as adapter from './syncAdapter';
@@ -90,6 +91,8 @@ export default function SettingsDiary() {
   const preloadRef = useRef({ cache: new Map(), queue: [], running: false }); // PC only: prefetched clip Blobs (driveId → Blob)
   const pendingPhotosRef = useRef([]); // in-flight photo handles for orphan cleanup
   const [lightbox, setLightbox] = useState(null); // { url, loading } full-image viewer
+  const [lang, setLang] = useState('ja'); // UI language (ja | en)
+  const t = makeT(lang);
   const videoSharePrepRef = useRef(null); // de-dupes concurrent share preparations
 
   const PRESET_GAMES = ['VALORANT', 'OVERWATCH 2', 'APEX LEGENDS', 'CS2', 'Marvel Rivals', 'Rainbow Six Siege X', 'Fortnite', 'Battlefield', 'Call of Duty', 'Kovaaks', 'AimLab'];
@@ -100,9 +103,13 @@ export default function SettingsDiary() {
     async function loadInitial() {
       try {
         try {
-          const t = await storage.get('theme');
-          if (t && (t.value === 'dark' || t.value === 'light')) setTheme(t.value);
+          const th = await storage.get('theme');
+          if (th && (th.value === 'dark' || th.value === 'light')) setTheme(th.value);
         } catch (e) {}
+        try {
+          const lg = await storage.get('lang');
+          setLang(detectLang(lg?.value));
+        } catch (e) { setLang(detectLang()); }
 
         const data = await adapter.loadAll();
         if (data.entries && Object.keys(data.entries).length) setEntries(data.entries);
@@ -174,23 +181,23 @@ export default function SettingsDiary() {
   const GUIDE_SLIDES = [
     {
       icon: 'logo',
-      title: 'VILDUP へようこそ',
-      body: '日々のセットアップを記録して、自分だけの最適解を積み上げていく「セットアップ日記」です。',
+      title: t('VILDUP へようこそ'),
+      body: t('日々のセットアップを記録して、自分だけの最適解を積み上げていく「セットアップ日記」です。'),
     },
     {
       icon: CalendarDays,
-      title: '記録する',
-      body: '日付をタップして、マウス・感度・キーボード設定と、その日の手応えを評価(★)で記録しましょう。',
+      title: t('記録する'),
+      body: t('日付をタップして、マウス・感度・キーボード設定と、その日の手応えを評価(★)で記録しましょう。'),
     },
     {
       icon: Cloud,
-      title: '同期 & クリップ',
-      body: 'Google ログインで PC とスマホの記録を同期。プレイ動画も添付できます(動画はあなた自身の Google Drive に保存されます)。',
+      title: t('同期 & クリップ'),
+      body: t('Google ログインで PC とスマホの記録を同期。プレイ動画も添付できます(動画はあなた自身の Google Drive に保存されます)。'),
     },
     {
       icon: Gem,
-      title: '続けるほど見えてくる',
-      body: 'Record で記録した日数に応じて称号を集め、Analysis で「勝てた日の構成」を分析。ホーム画面に追加すればアプリとして使えます。',
+      title: t('続けるほど見えてくる'),
+      body: t('Record で記録した日数に応じて称号を集め、Analysis で「勝てた日の構成」を分析。ホーム画面に追加すればアプリとして使えます。'),
     },
   ];
 
@@ -207,15 +214,20 @@ export default function SettingsDiary() {
 
   const openInfoPage = (kind) => {
     setMenuOpen(false);
-    const fallbackTitle = { about: 'このアプリについて', privacy: 'プライバシーポリシー', adpolicy: '広告ポリシー' }[kind] || '';
+    const fallbackTitle = { about: t('このアプリについて'), privacy: t('プライバシーポリシー'), adpolicy: t('広告ポリシー') }[kind] || '';
     setInfoPage({ kind, title: fallbackTitle, html: null });
     wp.loadPage(kind, (page) => {
       setInfoPage((prev) => {
         if (!prev || prev.kind !== kind) return prev;
-        if (!page) return { ...prev, html: '<p>このページは準備中です。</p>' };
+        if (!page) return { ...prev, html: '<p>' + t('このページは準備中です。') + '</p>' };
         return { kind, title: page.title || fallbackTitle, html: page.html };
       });
     });
+  };
+
+  const changeLang = async (code) => {
+    setLang(code);
+    try { await storage.set('lang', code); } catch (e) {}
   };
 
   const dismissIosInstallHint = async () => {
@@ -225,29 +237,29 @@ export default function SettingsDiary() {
 
   // ── Google Drive sync (Phase 2) ──
   const SYNC_LABELS = {
-    connecting: '接続中…',
-    syncing: '同期中…',
-    synced: 'Drive 同期済み',
-    offline: 'オフライン(未同期)',
-    'needs-login': '再ログインが必要',
-    error: '同期エラー(自動再試行)',
-    local: 'ローカル保存',
+    connecting: t('接続中…'),
+    syncing: t('同期中…'),
+    synced: t('Drive 同期済み'),
+    offline: t('オフライン(未同期)'),
+    'needs-login': t('再ログインが必要'),
+    error: t('同期エラー(自動再試行)'),
+    local: t('ローカル保存'),
   };
 
   const handleLogin = async () => {
     if (!adapter.isConfigured()) {
-      setImportNotice({ ok: false, msg: 'Google クライアント ID が未設定です(.env の VITE_GOOGLE_CLIENT_ID を設定してください)' });
+      setImportNotice({ ok: false, msg: t('Google クライアント ID が未設定です(.env の VITE_GOOGLE_CLIENT_ID を設定してください)') });
       return;
     }
     setAuthBusy(true);
     try {
       await adapter.signIn();
       setSyncHint(false);
-      setImportNotice({ ok: true, msg: 'Google Drive と接続しました。データを同期します。' });
+      setImportNotice({ ok: true, msg: t('Google Drive と接続しました。データを同期します。') });
       setTimeout(() => setImportNotice(null), 4000);
     } catch (e) {
       console.error('Sign-in error:', e);
-      setImportNotice({ ok: false, msg: `ログインできませんでした: ${e.message || e}` });
+      setImportNotice({ ok: false, msg: t('ログインできませんでした: {e}').replace('{e}', e.message || e) });
     } finally {
       setAuthBusy(false);
     }
@@ -480,18 +492,18 @@ export default function SettingsDiary() {
     const files = [...(fileList || [])].filter((f) => f && f.type.startsWith('image/'));
     if (!files.length) return;
     if (!isSignedIn) {
-      setImportNotice({ ok: false, msg: '写真の保存には Google ログインが必要です' });
+      setImportNotice({ ok: false, msg: t('写真の保存には Google ログインが必要です') });
       return;
     }
     const dateKey = formatDateKey(selectedDate);
     let remaining = MEDIA_MAX - mediaCount(formData);
     if (remaining <= 0) {
-      setImportNotice({ ok: false, msg: `メディアは1記録あたり合計${MEDIA_MAX}つまでです` });
+      setImportNotice({ ok: false, msg: t('メディアは1記録あたり合計{n}つまでです').replace('{n}', MEDIA_MAX) });
       return;
     }
     const take = files.slice(0, remaining);
     if (files.length > take.length) {
-      setImportNotice({ ok: false, msg: `合計${MEDIA_MAX}つまでのため ${take.length} 枚だけ追加しました` });
+      setImportNotice({ ok: false, msg: t('合計{n}つまでのため {m} 枚だけ追加しました').replace('{n}', MEDIA_MAX).replace('{m}', take.length) });
     }
     for (const file of take) {
       const id = genId();
@@ -542,18 +554,18 @@ export default function SettingsDiary() {
       setLightbox({ url: URL.createObjectURL(blob), loading: false, revoke: true });
     } catch (e) {
       setLightbox(null);
-      setImportNotice({ ok: false, msg: '写真の読み込みに失敗しました' });
+      setImportNotice({ ok: false, msg: t('写真の読み込みに失敗しました') });
     }
   };
 
   const acceptFile = (file) => {
     if (!file || !file.type.startsWith('video/')) return;
     if (!isSignedIn) {
-      setImportNotice({ ok: false, msg: 'クリップ動画の保存には Google ログインが必要です(URL 欄はログインなしで使えます)' });
+      setImportNotice({ ok: false, msg: t('クリップ動画の保存には Google ログインが必要です(URL 欄はログインなしで使えます)') });
       return;
     }
     if (!formData.clipFile && mediaCount(formData) >= MEDIA_MAX) {
-      setImportNotice({ ok: false, msg: `メディアは1記録あたり合計${MEDIA_MAX}つまでです(写真を減らしてください)` });
+      setImportNotice({ ok: false, msg: t('メディアは1記録あたり合計{n}つまでです(写真を減らしてください)').replace('{n}', MEDIA_MAX) });
       return;
     }
     cleanupPendingUpload();
@@ -612,7 +624,7 @@ export default function SettingsDiary() {
       }
     } catch (e) {
       console.error('Clip load error:', e);
-      setImportNotice({ ok: false, msg: 'クリップの読み込みに失敗しました' });
+      setImportNotice({ ok: false, msg: t('クリップの読み込みに失敗しました') });
     } finally {
       setClipLoading(false);
     }
@@ -624,7 +636,7 @@ export default function SettingsDiary() {
     const driveId = entry.clipFile?.driveId;
     if (!driveId) return;
     if (!isSignedIn) {
-      setImportNotice({ ok: false, msg: 'クリップの再生には Google ログインが必要です' });
+      setImportNotice({ ok: false, msg: t('クリップの再生には Google ログインが必要です') });
       return;
     }
     if (tlPlayer?.id === entry.id) return;
@@ -645,7 +657,7 @@ export default function SettingsDiary() {
     } catch (e) {
       console.error('Timeline clip load error:', e);
       setTlPlayer(null);
-      setImportNotice({ ok: false, msg: 'クリップの読み込みに失敗しました' });
+      setImportNotice({ ok: false, msg: t('クリップの読み込みに失敗しました') });
     }
   };
 
@@ -958,7 +970,7 @@ export default function SettingsDiary() {
     const items = mediaList(formData);
     if (!items.length) return null;
     if (items.some((m) => !m.blobUrl) && !isSignedIn) {
-      setImportNotice({ ok: false, msg: 'メディア付きポストには Google ログインが必要です' });
+      setImportNotice({ ok: false, msg: t('メディア付きポストには Google ログインが必要です') });
       return null;
     }
     const key = mediaKey(formData);
@@ -977,7 +989,7 @@ export default function SettingsDiary() {
       } catch (e) {
         console.error('Media share prepare error:', e);
         setVideoShare({ status: 'idle', files: null, key: null });
-        setImportNotice({ ok: false, msg: 'メディアの準備に失敗しました' });
+        setImportNotice({ ok: false, msg: t('メディアの準備に失敗しました') });
         return null;
       } finally {
         videoSharePrepRef.current = null;
@@ -1001,7 +1013,7 @@ export default function SettingsDiary() {
         setVideoShare({ status: 'idle', files: null, key: null });
       } catch (e) {
         if (e && e.name === 'NotAllowedError') {
-          setImportNotice({ ok: false, msg: '準備ができました。もう一度タップすると共有シートが開きます(共有先で X を選択)' });
+          setImportNotice({ ok: false, msg: t('準備ができました。もう一度タップすると共有シートが開きます(共有先で X を選択)') });
         }
         // AbortError = user closed the sheet; keep the files for a retry
       }
@@ -1015,7 +1027,7 @@ export default function SettingsDiary() {
         setTimeout(() => URL.revokeObjectURL(url), 4000);
       }
       window.open(`https://x.com/intent/tweet?${new URLSearchParams({ text })}`, '_blank', 'noopener,noreferrer');
-      setImportNotice({ ok: true, msg: `メディアを保存しました(${files.length}件)。開いた X の投稿画面にドラッグ&ドロップしてください。` });
+      setImportNotice({ ok: true, msg: t('メディアを保存しました({n}件)。開いた X の投稿画面にドラッグ&ドロップしてください。').replace('{n}', files.length) });
       setTimeout(() => setImportNotice(null), 8000);
     }
   };
@@ -1058,7 +1070,7 @@ export default function SettingsDiary() {
       try {
         const data = JSON.parse(reader.result);
         if (!data || typeof data.entries !== 'object' || data.entries === null) {
-          setImportNotice({ ok: false, msg: '形式が正しくありません(entries が見つかりません)' });
+          setImportNotice({ ok: false, msg: t('形式が正しくありません(entries が見つかりません)') });
           return;
         }
         // Normalize: accept v1 (object per day) and v2 (array per day)
@@ -1070,7 +1082,7 @@ export default function SettingsDiary() {
           if (list.length) { normalized[k] = list; count += list.length; }
         }
         if (count === 0) {
-          setImportNotice({ ok: false, msg: 'インポートできるエントリーがありませんでした' });
+          setImportNotice({ ok: false, msg: t('インポートできるエントリーがありませんでした') });
           return;
         }
         // window.confirm() is unreliable in sandboxed iframes — ask in-app instead
@@ -1081,7 +1093,7 @@ export default function SettingsDiary() {
           count,
         });
       } catch (err) {
-        setImportNotice({ ok: false, msg: 'JSON の読み込みに失敗しました' });
+        setImportNotice({ ok: false, msg: t('JSON の読み込みに失敗しました') });
       }
     };
     reader.readAsText(file);
@@ -1098,7 +1110,7 @@ export default function SettingsDiary() {
     }
     setEntries(normalized);
     setPendingImport(null);
-    setImportNotice({ ok: true, msg: `${count} 件のエントリーをインポートしました` });
+    setImportNotice({ ok: true, msg: t('{n} 件のエントリーをインポートしました').replace('{n}', count) });
     setTimeout(() => setImportNotice(null), 4000);
   };
 
@@ -1187,8 +1199,8 @@ export default function SettingsDiary() {
       for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
       const file = new File([arr], `vildup-${kind}.png`, { type: 'image/png' });
       const text = kind === 'record'
-        ? `${recordStats.totalDays}日分のセットアップを記録 — 称号「${recordStats.tier ? recordStats.tier.name : 'Stone'}」 #VILDUP`
-        : '自分に合うセットアップを分析しました #VILDUP';
+        ? t('{n}日分のセットアップを記録 — 称号「{tier}」 #VILDUP').replace('{n}', recordStats.totalDays).replace('{tier}', recordStats.tier ? recordStats.tier.name : 'Stone')
+        : t('自分に合うセットアップを分析しました #VILDUP');
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         navigator.share({ files: [file], text }).catch(() => {});
       } else {
@@ -1199,12 +1211,12 @@ export default function SettingsDiary() {
         a.click();
         document.body.removeChild(a);
         window.open(`https://x.com/intent/tweet?${new URLSearchParams({ text })}`, '_blank', 'noopener,noreferrer');
-        setImportNotice({ ok: true, msg: 'シェア画像を保存しました。X の投稿画面で画像を添付してください。' });
+        setImportNotice({ ok: true, msg: t('シェア画像を保存しました。X の投稿画面で画像を添付してください。') });
         setTimeout(() => setImportNotice(null), 6000);
       }
     } catch (e) {
       console.error('Share card error:', e);
-      setImportNotice({ ok: false, msg: 'シェア画像の作成に失敗しました' });
+      setImportNotice({ ok: false, msg: t('シェア画像の作成に失敗しました') });
     }
   };
 
@@ -1442,7 +1454,7 @@ export default function SettingsDiary() {
               <span
                 className="text-[9px] uppercase tk-dim flex items-center gap-1.5 px-1"
                 style={{ letterSpacing: '.16em' }}
-                title={`同期状態: ${SYNC_LABELS[syncStatus] || syncStatus}`}
+                title={t('同期状態: {s}').replace('{s}', SYNC_LABELS[syncStatus] || syncStatus)}
               >
                 {syncStatus === 'offline' || syncStatus === 'error' || syncStatus === 'needs-login'
                   ? <CloudOff className="w-3.5 h-3.5" strokeWidth={1.5} />
@@ -1450,7 +1462,7 @@ export default function SettingsDiary() {
                 <span>{SYNC_LABELS[syncStatus] || syncStatus}</span>
               </span>
             )}
-            <button onClick={() => setMenuOpen(true)} className="sd-tbtn" title="メニュー">
+            <button onClick={() => setMenuOpen(true)} className="sd-tbtn" title={t("メニュー")}>
               <Menu className="w-3.5 h-3.5" strokeWidth={1.5} /> Menu
             </button>
           </div>
@@ -1461,10 +1473,10 @@ export default function SettingsDiary() {
           <div className="mb-5 border bd-peri rounded-[2px] px-4 py-3 flex items-center gap-3 flex-wrap bg-perisoft">
             <Share className="w-4 h-4 tk-acc shrink-0" strokeWidth={1.5} />
             <div className="text-[12px] flex-1 min-w-[200px]">
-              ホーム画面に追加するとアプリとして使えます:Safari の<span className="font-medium">共有ボタン</span> →
-              <span className="font-medium">「ホーム画面に追加」</span>
+              {t('ホーム画面に追加するとアプリとして使えます:Safari の')}<span className="font-medium">{t('共有ボタン')}</span> →
+              <span className="font-medium">{t('「ホーム画面に追加」')}</span>
             </div>
-            <button onClick={dismissIosInstallHint} className="sd-tbtn">閉じる</button>
+            <button onClick={dismissIosInstallHint} className="sd-tbtn">{t('閉じる')}</button>
           </div>
         )}
 
@@ -1473,12 +1485,12 @@ export default function SettingsDiary() {
           <div className="mb-5 border bd-peri rounded-[2px] px-4 py-3 flex items-center gap-3 flex-wrap bg-perisoft">
             <Cloud className="w-4 h-4 tk-acc shrink-0" strokeWidth={1.5} />
             <div className="text-[12px] flex-1 min-w-[200px]">
-              前回 Google Drive 同期を使用していました。ログインすると同期を再開します。
+              {t('前回 Google Drive 同期を使用していました。ログインすると同期を再開します。')}
             </div>
             <div className="flex gap-2">
-              <button onClick={() => setSyncHint(false)} className="sd-tbtn">あとで</button>
+              <button onClick={() => setSyncHint(false)} className="sd-tbtn">{t('あとで')}</button>
               <button onClick={handleLogin} disabled={authBusy} className="sd-tbtn on">
-                <LogIn className="w-3 h-3" strokeWidth={1.5} /> ログイン
+                <LogIn className="w-3 h-3" strokeWidth={1.5} /> {t('ログイン')}
               </button>
             </div>
           </div>
@@ -1489,13 +1501,13 @@ export default function SettingsDiary() {
           <div className="mb-5 border bd-acc rounded-[2px] px-4 py-3.5 flex items-center gap-3 flex-wrap bg-perisofter">
             <AlertCircle className="w-4 h-4 tk-acc shrink-0" strokeWidth={1.5} />
             <div className="text-[12px] flex-1 min-w-[200px]">
-              Google からログアウトします。このブラウザのデータはどうしますか?
-              <span className="tk-dim">(Drive 上の data.json はどちらの場合も残ります)</span>
+              {t('Google からログアウトします。このブラウザのデータはどうしますか?')}
+              <span className="tk-dim">{t('(Drive 上の data.json はどちらの場合も残ります)')}</span>
             </div>
             <div className="flex gap-2">
-              <button onClick={() => setLogoutConfirm(false)} className="sd-tbtn">キャンセル</button>
-              <button onClick={() => confirmLogout(true)} className="sd-tbtn">残してログアウト</button>
-              <button onClick={() => confirmLogout(false)} className="sd-tbtn on">削除してログアウト</button>
+              <button onClick={() => setLogoutConfirm(false)} className="sd-tbtn">{t('キャンセル')}</button>
+              <button onClick={() => confirmLogout(true)} className="sd-tbtn">{t('残してログアウト')}</button>
+              <button onClick={() => confirmLogout(false)} className="sd-tbtn on">{t('削除してログアウト')}</button>
             </div>
           </div>
         )}
@@ -1505,15 +1517,15 @@ export default function SettingsDiary() {
           <div className="mb-5 border bd-acc rounded-[2px] px-4 py-3.5 flex items-center gap-3 flex-wrap bg-perisofter">
             <AlertCircle className="w-4 h-4 tk-acc shrink-0" strokeWidth={1.5} />
             <div className="text-[12px] flex-1 min-w-[200px]">
-              <span className="sd-num font-semibold">{pendingImport.count} 件</span>のエントリーをインポートします。
-              <span className="tk-acc font-medium">現在のデータはすべて置き換えられます。</span>
+              <span className="sd-num font-semibold">{pendingImport.count}</span>{t('のエントリーをインポートします。')}
+              <span className="tk-acc font-medium">{t('現在のデータはすべて置き換えられます。')}</span>
             </div>
             <div className="flex gap-2">
               <button onClick={cancelImport} className="sd-tbtn">
-                キャンセル
+                {t('キャンセル')}
               </button>
               <button onClick={applyImport} className="sd-tbtn on">
-                置き換えて続行
+                {t('置き換えて続行')}
               </button>
             </div>
           </div>
@@ -1637,7 +1649,7 @@ export default function SettingsDiary() {
               </div>
               <div className="text-[9px] tk-dim uppercase text-right" style={{ letterSpacing: '.18em' }}>
                 Newest first<br/>
-                <span style={{ letterSpacing: '.06em' }} className="normal-case tk-acc font-medium">色付きの値 = 前回(同ゲーム)から変更</span>
+                <span style={{ letterSpacing: '.06em' }} className="normal-case tk-acc font-medium">{t('色付きの値 = 前回(同ゲーム)から変更')}</span>
               </div>
             </div>
 
@@ -1656,7 +1668,7 @@ export default function SettingsDiary() {
                       }`}
                       style={{ letterSpacing: '.05em' }}
                     >
-                      {g === 'ALL' ? 'すべて' : g}
+                      {g === 'ALL' ? t('すべて') : g}
                     </button>
                   ))}
                 </div>
@@ -1666,7 +1678,7 @@ export default function SettingsDiary() {
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="メモ・デバイス名で検索"
+                    placeholder={t("メモ・デバイス名で検索")}
                     className="sd-input !w-52 !py-1.5 !pl-8 !pr-2.5 !text-xs"
                   />
                 </div>
@@ -1677,7 +1689,7 @@ export default function SettingsDiary() {
           {timelineItems.length === 0 ? (
             <div className="p-16 sm:p-24 text-center">
               <div className="text-[11px] tk-dim mb-5" style={{ letterSpacing: '.1em' }}>
-                {totalEntries === 0 ? 'まだ記録がありません' : '条件に一致する記録がありません'}
+                {totalEntries === 0 ? t('まだ記録がありません') : t('条件に一致する記録がありません')}
               </div>
               {totalEntries === 0 ? (
                 <button
@@ -1691,7 +1703,7 @@ export default function SettingsDiary() {
                   onClick={() => { setGameFilter('ALL'); setSearchQuery(''); }}
                   className="sd-tbtn"
                 >
-                  フィルタをクリア
+                  {t('フィルタをクリア')}
                 </button>
               )}
             </div>
@@ -1808,7 +1820,7 @@ export default function SettingsDiary() {
                           ) : entry.clipFile.driveId ? (
                             <div
                               onClick={(e) => { e.stopPropagation(); playTimelineClip(entry); }}
-                              title="タップで再生"
+                              title={t("タップで再生")}
                               className="relative w-full max-w-[260px] aspect-video rounded-[2px] border bd-line mb-2 overflow-hidden bg-perisofter"
                             >
                               {entry.clipFile.thumb && (
@@ -1816,7 +1828,7 @@ export default function SettingsDiary() {
                               )}
                               <div className="absolute inset-0 flex items-center justify-center" style={{ background: 'rgba(0,0,0,.25)' }}>
                                 <span className="px-3.5 py-2 text-[10px] uppercase border bd-acc rounded-[2px] bg-acc tk-onacc" style={{ letterSpacing: '.16em' }}>
-                                  {tlPlayer?.id === entry.id && tlPlayer.loading ? '読み込み中…' : '▶ 再生'}
+                                  {tlPlayer?.id === entry.id && tlPlayer.loading ? t('読み込み中…') : t('▶ 再生')}
                                 </span>
                               </div>
                             </div>
@@ -1857,7 +1869,7 @@ export default function SettingsDiary() {
                           onClick={(e) => e.stopPropagation()}
                           className="text-[10px] tk-acc underline underline-offset-2 dec-peri hdec-acc mt-3 inline-block transition"
                         >
-                          クリップを開く ↗
+                          {t('クリップを開く ↗')}
                         </a>
                       )}
                     </div>
@@ -1880,8 +1892,8 @@ export default function SettingsDiary() {
                 <span className="tk-dim text-sm font-normal ml-1.5">{recordStats.totalDays === 1 ? 'day' : 'days'} logged</span>
               </div>
             </div>
-            <button onClick={() => shareStatsCard('record')} className="sd-tbtn" title="シェア画像を作成して X へ">
-              <Share2 className="w-3 h-3" strokeWidth={1.5} /> シェア画像
+            <button onClick={() => shareStatsCard('record')} className="sd-tbtn" title={t("シェア画像を作成して X へ")}>
+              <Share2 className="w-3 h-3" strokeWidth={1.5} /> {t('シェア画像')}
             </button>
           </div>
 
@@ -1898,12 +1910,14 @@ export default function SettingsDiary() {
                 }}
               />
               <div className="min-w-0">
-                <div className="text-[9px] tk-dim uppercase mb-1" style={{ letterSpacing: '.22em' }}>現在の称号</div>
+                <div className="text-[9px] tk-dim uppercase mb-1" style={{ letterSpacing: '.22em' }}>{t('現在の称号')}</div>
                 <div className="text-[30px] font-light leading-none">{recordStats.tier ? recordStats.tier.name : '—'}</div>
                 {recordStats.next && (
                   <div className="text-[11px] tk-dim mt-2">
-                    次の称号 <span className="font-medium tk-acc">{recordStats.next.name}</span> まで
-                    あと <span className="sd-num font-semibold tk-ink">{recordStats.next.days - recordStats.totalDays}</span> 日
+                    {t('次の称号')} <span className="font-medium tk-acc">{recordStats.next.name}</span>
+                    {lang === 'ja' ? ' まで あと ' : ' — '}
+                    <span className="sd-num font-semibold tk-ink">{recordStats.next.days - recordStats.totalDays}</span>
+                    {lang === 'ja' ? ' 日' : ' d to go'}
                   </div>
                 )}
               </div>
@@ -1919,23 +1933,23 @@ export default function SettingsDiary() {
             )}
 
             <div className="border bd-peri bg-perisoft rounded-[2px] px-4 py-3.5 text-[12px] leading-relaxed">
-              {recordStats.praise}
+              {t(recordStats.praise)}
             </div>
 
             <div className="border bd-line rounded-[2px] p-4">
-              <div className="text-[8px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.18em' }}>累計記録日数</div>
-              <div className="sd-num text-[26px] font-light">{recordStats.totalDays}<span className="text-[12px] tk-dim ml-1">日</span></div>
+              <div className="text-[8px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.18em' }}>{t('累計記録日数')}</div>
+              <div className="sd-num text-[26px] font-light">{recordStats.totalDays}<span className="text-[12px] tk-dim ml-1">{t('日')}</span></div>
             </div>
 
             <div>
-              <div className="text-[9px] tk-dim uppercase mb-2.5" style={{ letterSpacing: '.22em' }}>直近 12 週間</div>
+              <div className="text-[9px] tk-dim uppercase mb-2.5" style={{ letterSpacing: '.22em' }}>{t('直近 12 週間')}</div>
               <div className="flex gap-1 overflow-x-auto sd-scroll pb-1">
                 {recordStats.heatWeeks.map((week, wi) => (
                   <div key={wi} className="flex flex-col gap-1">
                     {week.map((cell) => (
                       <div
                         key={cell.key}
-                        title={`${cell.key}: ${cell.count} 件`}
+                        title={`${cell.key} · ${cell.count}`}
                         className="w-3 h-3 rounded-[1px]"
                         style={{
                           background: cell.count ? 'var(--accent)' : 'var(--line2)',
@@ -1950,29 +1964,29 @@ export default function SettingsDiary() {
 
             {!recordStats.loggedToday && (
               <div className="flex items-center justify-between gap-3 flex-wrap border bd-acc rounded-[2px] px-4 py-3 bg-perisofter">
-                <span className="text-[12px]">今日はまだ記録していません。1件記録して累計を伸ばしましょう。</span>
-                <button onClick={() => { setView('calendar'); openDate(new Date()); }} className="sd-tbtn on">今日を記録</button>
+                <span className="text-[12px]">{t('今日はまだ記録していません。1件記録して累計を伸ばしましょう。')}</span>
+                <button onClick={() => { setView('calendar'); openDate(new Date()); }} className="sd-tbtn on">{t('今日を記録')}</button>
               </div>
             )}
 
             <div>
-              <div className="text-[9px] tk-dim uppercase mb-2.5" style={{ letterSpacing: '.22em' }}>称号ロードマップ</div>
+              <div className="text-[9px] tk-dim uppercase mb-2.5" style={{ letterSpacing: '.22em' }}>{t('称号ロードマップ')}</div>
               <div className="flex gap-1.5 flex-wrap">
-                {recordStats.roadmap.map((t) => (
+                {recordStats.roadmap.map((tr) => (
                   <div
-                    key={t.name}
-                    title={`${t.days}日`}
-                    className={`text-[10px] border rounded-[2px] px-2.5 py-1.5 flex items-center gap-1.5 ${t.reached ? 'bd-acc tk-ink' : 'bd-line tk-faint'}`}
+                    key={tr.name}
+                    title={`${tr.days}${t('日')}`}
+                    className={`text-[10px] border rounded-[2px] px-2.5 py-1.5 flex items-center gap-1.5 ${tr.reached ? 'bd-acc tk-ink' : 'bd-line tk-faint'}`}
                   >
                     <span
                       className="w-2.5 h-2.5 rounded-[1px] inline-block"
                       style={{
-                        background: t.color2 ? `linear-gradient(135deg, ${t.color}, ${t.color2})` : t.color,
-                        opacity: t.reached ? 1 : 0.35,
+                        background: tr.color2 ? `linear-gradient(135deg, ${tr.color}, ${tr.color2})` : tr.color,
+                        opacity: tr.reached ? 1 : 0.35,
                       }}
                     />
-                    {t.name}
-                    <span className="sd-num tk-faint">{t.days}</span>
+                    {tr.name}
+                    <span className="sd-num tk-faint">{tr.days}</span>
                   </div>
                 ))}
               </div>
@@ -1993,8 +2007,8 @@ export default function SettingsDiary() {
                   <span className="tk-dim text-sm font-normal ml-1.5">rated entries</span>
                 </div>
               </div>
-              <button onClick={() => shareStatsCard('analysis')} className="sd-tbtn" title="シェア画像を作成して X へ">
-                <Share2 className="w-3 h-3" strokeWidth={1.5} /> シェア画像
+              <button onClick={() => shareStatsCard('analysis')} className="sd-tbtn" title={t("シェア画像を作成して X へ")}>
+                <Share2 className="w-3 h-3" strokeWidth={1.5} /> {t('シェア画像')}
               </button>
             </div>
             {uniqueGames.length > 0 && (
@@ -2008,7 +2022,7 @@ export default function SettingsDiary() {
                     }`}
                     style={{ letterSpacing: '.05em' }}
                   >
-                    {g === 'ALL' ? 'すべて' : g}
+                    {g === 'ALL' ? t('すべて') : g}
                   </button>
                 ))}
               </div>
@@ -2018,18 +2032,18 @@ export default function SettingsDiary() {
           {analysisStats.ratedCount < 5 ? (
             <div className="p-16 sm:p-24 text-center">
               <div className="text-[11px] tk-dim mb-2" style={{ letterSpacing: '.1em' }}>
-                まだ集計に十分な記録がありません(評価付きの記録が 5 件以上必要です)
+                {t('まだ集計に十分な記録がありません(評価付きの記録が 5 件以上必要です)')}
               </div>
               <div className="sd-num text-[11px] tk-faint mb-5">{analysisStats.ratedCount} / 5</div>
               <button onClick={() => { setView('calendar'); openDate(new Date()); }} className="sd-tbtn">
-                評価付きで記録する
+                {t('評価付きで記録する')}
               </button>
             </div>
           ) : (
             <div className="p-6 sm:p-8 space-y-8">
               <div>
                 <div className="text-[9px] tk-dim uppercase mb-3" style={{ letterSpacing: '.22em' }}>
-                  ベストギア <span className="normal-case" style={{ letterSpacing: '.04em' }}>(平均評価順)</span>
+                  {t('ベストギア')} <span className="normal-case" style={{ letterSpacing: '.04em' }}>{t('(平均評価順)')}</span>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   {[
@@ -2040,7 +2054,7 @@ export default function SettingsDiary() {
                     <div key={tag} className="border bd-line rounded-[2px] p-4">
                       <div className="text-[8px] tk-dim uppercase mb-2.5" style={{ letterSpacing: '.18em' }}>{label}</div>
                       {list.length === 0 ? (
-                        <div className="text-[11px] tk-faint">記録なし</div>
+                        <div className="text-[11px] tk-faint">{t('記録なし')}</div>
                       ) : (
                         <div className="space-y-2.5">
                           {list.slice(0, 3).map((g, i) => (
@@ -2063,7 +2077,7 @@ export default function SettingsDiary() {
 
               <div>
                 <div className="text-[9px] tk-dim uppercase mb-3" style={{ letterSpacing: '.22em' }}>
-                  あなたのベスト構成 <span className="normal-case" style={{ letterSpacing: '.04em' }}>(★{analysisStats.highRating.toFixed(1)} 以上の {analysisStats.highCount} 件から最頻値)</span>
+                  {t('あなたのベスト構成')} <span className="normal-case" style={{ letterSpacing: '.04em' }}>(★{analysisStats.highRating.toFixed(1)} 以上の {analysisStats.highCount} 件から最頻値)</span>
                 </div>
                 {analysisStats.highCount === 0 ? (
                   <div className="text-[11px] tk-faint border bd-line rounded-[2px] p-4">
@@ -2108,16 +2122,16 @@ export default function SettingsDiary() {
 
         {/* Footer note */}
         <div className="mt-5 text-[9px] tk-faint uppercase flex justify-between flex-wrap gap-2" style={{ letterSpacing: '.18em' }}>
-          <span>{isSignedIn ? '日付を選択して記録 — Google Drive と同期' : '日付を選択して記録 — ローカル保存(ログインなしで全機能利用可)'}</span>
+          <span>{isSignedIn ? t('日付を選択して記録 — Google Drive と同期') : t('日付を選択して記録 — ローカル保存(ログインなしで全機能利用可)')}</span>
           <span>{(isSignedIn ? 'Drive sync' : 'Local mode') + ' · α 0.0.1'}</span>
         </div>
 
         {/* Legal footer — affiliate disclosure + copyright */}
         <div className="mt-3 pt-3 border-t bd-line2 text-[10px] tk-faint flex items-center justify-between flex-wrap gap-2">
           <span>
-            本サイトには PR・アフィリエイトリンクを含みます。詳しくは
-            <button onClick={() => openInfoPage('adpolicy')} className="tk-dim underline underline-offset-2 dec-peri hdec-acc h-acc transition">広告ポリシー</button>
-            をご覧ください。
+            {t('本サイトには PR・アフィリエイトリンクを含みます。詳しくは')}
+            <button onClick={() => openInfoPage('adpolicy')} className="tk-dim underline underline-offset-2 dec-peri hdec-acc h-acc transition">{t('広告ポリシー')}</button>
+            {t('をご覧ください。')}
           </span>
           <span className="sd-num">© 2026 MONE²</span>
         </div>
@@ -2151,7 +2165,7 @@ export default function SettingsDiary() {
                       width: i === guideStep ? '20px' : '6px',
                       background: i === guideStep ? 'var(--accent)' : 'var(--line2)',
                     }}
-                    aria-label={`スライド ${i + 1}`}
+                    aria-label={t('スライド {n}').replace('{n}', i + 1)}
                   />
                 ))}
               </div>
@@ -2161,7 +2175,7 @@ export default function SettingsDiary() {
                   <span className="text-[11px] tk-faint">{guideStep + 1} / {GUIDE_SLIDES.length}</span>
                 ) : (
                   <button onClick={closeGuide} className="text-[11px] tk-dim h-acc transition px-2" style={{ letterSpacing: '.08em' }}>
-                    スキップ
+                    {t('スキップ')}
                   </button>
                 )}
                 {isLast ? (
@@ -2170,7 +2184,7 @@ export default function SettingsDiary() {
                     className="px-6 py-2.5 text-[10px] uppercase rounded-[2px] border bg-acc tk-onacc bd-acc transition flex items-center gap-2"
                     style={{ letterSpacing: '.16em' }}
                   >
-                    はじめる
+                    {t('はじめる')}
                   </button>
                 ) : (
                   <button
@@ -2178,7 +2192,7 @@ export default function SettingsDiary() {
                     className="px-6 py-2.5 text-[10px] uppercase rounded-[2px] border bg-acc tk-onacc bd-acc transition flex items-center gap-2"
                     style={{ letterSpacing: '.16em' }}
                   >
-                    次へ <ChevronRight className="w-3.5 h-3.5" strokeWidth={1.5} />
+                    {t('次へ')} <ChevronRight className="w-3.5 h-3.5" strokeWidth={1.5} />
                   </button>
                 )}
               </div>
@@ -2205,7 +2219,7 @@ export default function SettingsDiary() {
             </div>
             {infoPage.html === null ? (
               <div className="px-6 py-16 text-center text-[11px] tk-dim" style={{ letterSpacing: '.1em' }}>
-                読み込み中…
+                {t('読み込み中…')}
               </div>
             ) : (
               <div
@@ -2224,7 +2238,7 @@ export default function SettingsDiary() {
           onClick={() => { if (lightbox.revoke && lightbox.url) URL.revokeObjectURL(lightbox.url); setLightbox(null); }}
         >
           {lightbox.loading
-            ? <span className="text-white/80 text-[12px]" style={{ letterSpacing: '.1em' }}>読み込み中…</span>
+            ? <span className="text-white/80 text-[12px]" style={{ letterSpacing: '.1em' }}>{t('読み込み中…')}</span>
             : <img src={lightbox.url} alt="" className="max-w-full max-h-full object-contain rounded-[2px] anim-pop" onClick={(e) => e.stopPropagation()} />}
         </div>
       )}
@@ -2247,7 +2261,7 @@ export default function SettingsDiary() {
                       ? <CloudOff className="w-3.5 h-3.5" strokeWidth={1.5} />
                       : <Cloud className="w-3.5 h-3.5 tk-acc" strokeWidth={1.5} />)
                   : null}
-                {isSignedIn ? (SYNC_LABELS[syncStatus] || syncStatus) : 'ローカルモード'}
+                {isSignedIn ? (SYNC_LABELS[syncStatus] || syncStatus) : t('ローカルモード')}
               </span>
               <button onClick={() => setMenuOpen(false)} className="tk-dim h-acc transition" title="閉じる">
                 <X className="w-4 h-4" strokeWidth={1.5} />
@@ -2256,12 +2270,12 @@ export default function SettingsDiary() {
             {isSignedIn ? (
               <button onClick={() => { setMenuOpen(false); setLogoutConfirm(true); }}
                 className="w-full flex items-center gap-3 px-4 py-3.5 text-[13px] hbg-perisoft transition text-left">
-                <LogOut className="w-4 h-4 tk-dim" strokeWidth={1.5} /> Google からログアウト
+                <LogOut className="w-4 h-4 tk-dim" strokeWidth={1.5} /> {t('Google からログアウト')}
               </button>
             ) : (
               <button onClick={() => { setMenuOpen(false); handleLogin(); }} disabled={authBusy}
                 className="w-full flex items-center gap-3 px-4 py-3.5 text-[13px] hbg-perisoft transition text-left disabled:opacity-50">
-                <LogIn className="w-4 h-4 tk-dim" strokeWidth={1.5} /> {authBusy ? '接続中…' : 'Google でログイン'}
+                <LogIn className="w-4 h-4 tk-dim" strokeWidth={1.5} /> {authBusy ? t('接続中…') : t('Google でログイン')}
               </button>
             )}
             <button onClick={() => { setMenuOpen(false); handleExport(); }}
@@ -2275,19 +2289,33 @@ export default function SettingsDiary() {
             <button onClick={() => { setMenuOpen(false); toggleTheme(); }}
               className="w-full flex items-center gap-3 px-4 py-3.5 text-[13px] hbg-perisoft transition text-left border-t bd-line2">
               {theme === 'light' ? <Moon className="w-4 h-4 tk-dim" strokeWidth={1.5} /> : <Sun className="w-4 h-4 tk-dim" strokeWidth={1.5} />}
-              {theme === 'light' ? 'ダークモード' : 'ライトモード'}
+              {theme === 'light' ? t('ダークモード') : t('ライトモード')}
             </button>
+            <div className="flex items-center gap-2 px-4 py-3 border-t bd-line2">
+              <Globe className="w-4 h-4 tk-dim shrink-0" strokeWidth={1.5} />
+              <div className="flex gap-1.5">
+                {LANGS.map((l) => (
+                  <button
+                    key={l.code}
+                    onClick={() => changeLang(l.code)}
+                    className={`text-[11px] px-3 py-1.5 rounded-[2px] border transition press ${lang === l.code ? 'bg-acc tk-onacc bd-acc' : 'bd-line tk-dim hbd-acc'}`}
+                  >
+                    {l.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <button onClick={openGuide}
               className="w-full flex items-center gap-3 px-4 py-3.5 text-[13px] hbg-perisoft transition text-left border-t bd-line2">
-              <Info className="w-4 h-4 tk-dim" strokeWidth={1.5} /> 使い方
+              <Info className="w-4 h-4 tk-dim" strokeWidth={1.5} /> {t('使い方')}
             </button>
             <button onClick={() => openInfoPage('about')}
               className="w-full flex items-center gap-3 px-4 py-3.5 text-[13px] hbg-perisoft transition text-left border-t bd-line2">
-              <Info className="w-4 h-4 tk-dim" strokeWidth={1.5} /> このアプリについて
+              <Info className="w-4 h-4 tk-dim" strokeWidth={1.5} /> {t('このアプリについて')}
             </button>
             <button onClick={() => openInfoPage('privacy')}
               className="w-full flex items-center gap-3 px-4 py-3.5 text-[13px] hbg-perisoft transition text-left border-t bd-line2">
-              <ShieldCheck className="w-4 h-4 tk-dim" strokeWidth={1.5} /> プライバシーポリシー
+              <ShieldCheck className="w-4 h-4 tk-dim" strokeWidth={1.5} /> {t('プライバシーポリシー')}
             </button>
           </div>
         </div>
@@ -2382,7 +2410,7 @@ export default function SettingsDiary() {
               {prefilledFrom && (
                 <div className="border bd-peri rounded-[2px] bg-perisoft px-3.5 py-2.5 flex items-center justify-between gap-3">
                   <div className="flex items-baseline gap-2.5 min-w-0">
-                    <span className="text-[9px] uppercase font-semibold tk-acc shrink-0" style={{ letterSpacing: '.18em' }}>前回から引き継ぎ</span>
+                    <span className="text-[9px] uppercase font-semibold tk-acc shrink-0" style={{ letterSpacing: '.18em' }}>{t('前回から引き継ぎ')}</span>
                     <span className="sd-num text-[11px] tk-ink truncate">
                       {prefilledFrom}
                     </span>
@@ -2407,7 +2435,7 @@ export default function SettingsDiary() {
                   className="sd-input flex items-center justify-between text-left"
                 >
                   <span className={formData.game ? 'font-medium' : 'tk-faint'}>
-                    {formData.game || 'ゲームを選択...'}
+                    {formData.game || t('ゲームを選択...')}
                   </span>
                   <ChevronDown className={`w-4 h-4 tk-dim transition ${gameDropdownOpen ? 'rotate-180' : ''}`} strokeWidth={1.5} />
                 </button>
@@ -2445,7 +2473,7 @@ export default function SettingsDiary() {
                         value={newGameInput}
                         onChange={(e) => setNewGameInput(e.target.value)}
                         onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomGame(); } }}
-                        placeholder="新しいゲームを追加..."
+                        placeholder={t("新しいゲームを追加...")}
                         className="sd-input flex-1 !py-1.5 !px-2.5 text-xs"
                       />
                       <button
@@ -2465,7 +2493,7 @@ export default function SettingsDiary() {
               <div>
                 <label className="sd-label">
                   02 — Rating
-                  <span className="ml-auto normal-case font-normal" style={{ letterSpacing: '.04em' }}>星の左右で 0.5 刻み</span>
+                  <span className="ml-auto normal-case font-normal" style={{ letterSpacing: '.04em' }}>{t('星の左右で 0.5 刻み')}</span>
                 </label>
                 <div className="flex items-center gap-4">
                   <div className="flex gap-1">
@@ -2526,7 +2554,7 @@ export default function SettingsDiary() {
                       type="text"
                       list="dl-mouse"
                       className="sd-input !border-0 !p-0 !text-[13px]"
-                      placeholder="マウス名(例: Logitech G PRO X SUPERLIGHT 2)"
+                      placeholder={t("マウス名(例: Logitech G PRO X SUPERLIGHT 2)")}
                       value={formData.mouse}
                       onChange={(e) => setFormData({ ...formData, mouse: e.target.value })}
                     />
@@ -2563,7 +2591,7 @@ export default function SettingsDiary() {
                   type="text"
                   list="dl-mousepad"
                   className="sd-input"
-                  placeholder="マウスパッド名(例: Artisan Zero XSOFT)"
+                  placeholder={t("マウスパッド名(例: Artisan Zero XSOFT)")}
                   value={formData.mousepad}
                   onChange={(e) => setFormData({ ...formData, mousepad: e.target.value })}
                 />
@@ -2581,7 +2609,7 @@ export default function SettingsDiary() {
                       type="text"
                       list="dl-keyboard"
                       className="sd-input !border-0 !p-0 !text-[13px]"
-                      placeholder="キーボード名(例: Wooting 60HE)"
+                      placeholder={t("キーボード名(例: Wooting 60HE)")}
                       value={formData.keyboard}
                       onChange={(e) => setFormData({ ...formData, keyboard: e.target.value })}
                     />
@@ -2616,7 +2644,7 @@ export default function SettingsDiary() {
                 <textarea
                   className="sd-input"
                   rows={4}
-                  placeholder="今日の調子、感じたこと、調整した設定など..."
+                  placeholder={t("今日の調子、感じたこと、調整した設定など...")}
                   value={formData.memo}
                   onChange={(e) => setFormData({ ...formData, memo: e.target.value })}
                 />
@@ -2657,7 +2685,7 @@ export default function SettingsDiary() {
                         type="button"
                         onClick={() => removePhoto(p.id)}
                         className="absolute top-0.5 right-0.5 w-5 h-5 rounded-full bg-black/55 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
-                        title="削除"
+                        title={t("削除")}
                       >
                         <X className="w-3 h-3" strokeWidth={2} />
                       </button>
@@ -2666,17 +2694,17 @@ export default function SettingsDiary() {
                   {mediaCount(formData) < MEDIA_MAX && (
                     <button
                       type="button"
-                      onClick={() => isSignedIn ? photoInputRef.current?.click() : setImportNotice({ ok: false, msg: '写真の保存には Google ログインが必要です' })}
+                      onClick={() => isSignedIn ? photoInputRef.current?.click() : setImportNotice({ ok: false, msg: t('写真の保存には Google ログインが必要です') })}
                       className="w-[72px] h-[72px] rounded-[3px] border border-dashed bd-line hbd-acc flex flex-col items-center justify-center gap-1 tk-dim h-acc transition press"
-                      title="写真を追加"
+                      title={t("写真を追加")}
                     >
                       <Plus className="w-4 h-4" strokeWidth={1.5} />
-                      <span className="text-[8px] uppercase" style={{ letterSpacing: '.14em' }}>写真</span>
+                      <span className="text-[8px] uppercase" style={{ letterSpacing: '.14em' }}>{t('写真')}</span>
                     </button>
                   )}
                 </div>
                 <div className="text-[9px] tk-faint mt-1.5" style={{ letterSpacing: '.06em' }}>
-                  写真・動画は合計 {MEDIA_MAX} つまで（残り {Math.max(0, MEDIA_MAX - mediaCount(formData))}）。共有時はテキストと一緒に投稿できます。
+                  {t('写真・動画は合計 {n} つまで').replace('{n}', MEDIA_MAX)}（{t('残り {n}').replace('{n}', Math.max(0, MEDIA_MAX - mediaCount(formData)))}）
                 </div>
               </div>
 
@@ -2707,10 +2735,10 @@ export default function SettingsDiary() {
                       />
                       <Upload className={`w-6 h-6 mx-auto mb-2.5 ${dragOver ? 'tk-acc' : 'tk-faint'}`} strokeWidth={1.2} />
                       <div className={`text-[10px] uppercase ${dragOver ? 'tk-acc' : 'tk-dim'}`} style={{ letterSpacing: '.22em' }}>
-                        {dragOver ? 'ここにドロップ' : '動画をドラッグ'}
+                        {dragOver ? t('ここにドロップ') : t('動画をドラッグ')}
                       </div>
                       <div className="text-[9px] tk-faint mt-1.5" style={{ letterSpacing: '.1em' }}>
-                        {isSignedIn ? 'またはタップして選択' : 'クリップの保存には Google ログインが必要です'}
+                        {isSignedIn ? t('またはタップして選択') : t('クリップの保存には Google ログインが必要です')}
                       </div>
                     </div>
                     <div className="flex items-center gap-3 my-3.5">
@@ -2728,7 +2756,7 @@ export default function SettingsDiary() {
                     {formData.clipUrl && (
                       <a href={formData.clipUrl} target="_blank" rel="noopener noreferrer"
                         className="text-[10px] tk-acc underline underline-offset-2 dec-peri hdec-acc mt-2 inline-block transition">
-                        クリップを開く ↗
+                        {t('クリップを開く ↗')}
                       </a>
                     )}
                   </>
@@ -2765,11 +2793,11 @@ export default function SettingsDiary() {
                             className="relative z-10 px-5 py-2.5 text-[10px] uppercase border bd-acc rounded-[2px] bg-acc tk-onacc transition disabled:opacity-60"
                             style={{ letterSpacing: '.18em' }}
                           >
-                            {clipLoading ? '読み込み中…' : '▶ 再生'}
+                            {clipLoading ? t('読み込み中…') : t('▶ 再生')}
                           </button>
                         ) : (
                           <div className="relative z-10 text-[9px] tk-dim text-center" style={{ letterSpacing: '.08em' }}>
-                            Google ログインすると Drive から再生できます
+                            {t('Google ログインすると Drive から再生できます')}
                           </div>
                         )}
                       </div>
@@ -2777,8 +2805,8 @@ export default function SettingsDiary() {
                       <div className="aspect-video bg-perisofter flex items-center justify-center flex-col gap-2.5 p-4">
                         <Film className="w-7 h-7 tk-faint" strokeWidth={1.2} />
                         <div className="text-[9px] tk-dim text-center leading-relaxed" style={{ letterSpacing: '.08em' }}>
-                          動画本体は保存されていません<br/>
-                          <span className="tk-faint">(ファイル情報のみの記録)</span>
+                          {t('動画本体は保存されていません')}<br/>
+                          <span className="tk-faint">{t('(ファイル情報のみの記録)')}</span>
                         </div>
                       </div>
                     )}
@@ -2804,7 +2832,7 @@ export default function SettingsDiary() {
                     {formData.clipFile.status === 'uploading' && (
                       <div className="px-3.5 pb-3.5 pt-3 border-t bd-line2">
                         <div className="flex items-center justify-between text-[9px] tk-dim mb-1.5 uppercase" style={{ letterSpacing: '.14em' }}>
-                          <span>Drive へアップロード中…</span>
+                          <span>{t('Drive へアップロード中…')}</span>
                           <span className="sd-num">{formData.clipFile.progress || 0}%</span>
                         </div>
                         <div className="h-1 bg-line rounded-full overflow-hidden">
@@ -2815,13 +2843,13 @@ export default function SettingsDiary() {
                     {formData.clipFile.status === 'error' && (
                       <div className="px-3.5 py-3 border-t bd-line2 flex items-center gap-2 flex-wrap">
                         <AlertCircle className="w-3.5 h-3.5 tk-acc" strokeWidth={1.5} />
-                        <span className="text-[10px] tk-acc flex-1">アップロードに失敗しました(このまま保存してもクリップは記録されません)</span>
-                        <button type="button" onClick={retryUpload} className="sd-tbtn">再試行</button>
+                        <span className="text-[10px] tk-acc flex-1">{t('アップロードに失敗しました(このまま保存してもクリップは記録されません)')}</span>
+                        <button type="button" onClick={retryUpload} className="sd-tbtn">{t('再試行')}</button>
                       </div>
                     )}
                     {formData.clipFile.status === 'done' && (
                       <div className="px-3.5 py-2.5 border-t bd-line2 flex items-center gap-1.5 text-[9px] tk-dim" style={{ letterSpacing: '.1em' }}>
-                        <Check className="w-3 h-3 tk-acc" strokeWidth={1.5} /> Drive にアップロード済み — 保存すると記録に紐付きます
+                        <Check className="w-3 h-3 tk-acc" strokeWidth={1.5} /> {t('Drive にアップロード済み — 保存すると記録に紐付きます')}
                       </div>
                     )}
                   </div>
@@ -2839,12 +2867,12 @@ export default function SettingsDiary() {
                 <>
                   <div className="text-[11px] flex items-center gap-2 min-w-0">
                     <AlertCircle className="w-4 h-4 tk-acc shrink-0" strokeWidth={1.5} />
-                    <span>Drive 上のメディア(動画・写真)も削除しますか?</span>
+                    <span>{t('Drive 上のメディア(動画・写真)も削除しますか?')}</span>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <button onClick={() => setDeleteClipConfirm(false)} className="sd-tbtn">キャンセル</button>
-                    <button onClick={() => performDelete(false)} className="sd-tbtn">記録のみ削除</button>
-                    <button onClick={() => performDelete(true)} className="sd-tbtn on">メディアも削除</button>
+                    <button onClick={() => setDeleteClipConfirm(false)} className="sd-tbtn">{t('キャンセル')}</button>
+                    <button onClick={() => performDelete(false)} className="sd-tbtn">{t('記録のみ削除')}</button>
+                    <button onClick={() => performDelete(true)} className="sd-tbtn on">{t('メディアも削除')}</button>
                   </div>
                 </>
               ) : (
@@ -2888,12 +2916,12 @@ export default function SettingsDiary() {
                           {copied ? (
                             <>
                               <Check className="w-4 h-4" strokeWidth={1.5} />
-                              <span className="font-medium">コピーしました</span>
+                              <span className="font-medium">{t('コピーしました')}</span>
                             </>
                           ) : (
                             <>
                               <Copy className="w-4 h-4 tk-dim" strokeWidth={1.5} />
-                              <span>テキストをコピー</span>
+                              <span>{t('テキストをコピー')}</span>
                             </>
                           )}
                         </button>
@@ -2905,7 +2933,7 @@ export default function SettingsDiary() {
                           >
                             <span className="w-5 h-5 flex items-center justify-center border bd-ink rounded-[2px] text-[10px] font-bold shrink-0">𝕏</span>
                             <span className="flex-1">
-                              {videoShare.status === 'preparing' ? 'メディアを準備中…' : 'メディア付きでポスト'}
+                              {videoShare.status === 'preparing' ? t('メディアを準備中…') : t('メディア付きでポスト')}
                             </span>
                             <Film className={`w-4 h-4 shrink-0 ${videoShare.status === 'ready' ? 'tk-acc' : 'tk-faint'}`} strokeWidth={1.5} />
                           </button>
