@@ -1167,6 +1167,25 @@ export default function SettingsDiary() {
         }
         .sd-tbtn:hover { color: var(--accent); border-color: var(--accent); }
         .sd-tbtn.on { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+        .sd-tbtn:active { transform: scale(.95); }
+
+        /* ── motion: easing-driven, subtle, reduced-motion aware ── */
+        @keyframes vd-fade { from { opacity: 0 } to { opacity: 1 } }
+        @keyframes vd-pop { from { opacity: 0; transform: translateY(10px) scale(.975) } to { opacity: 1; transform: none } }
+        @keyframes vd-sheet { from { opacity: 0; transform: translateY(34px) } to { opacity: 1; transform: none } }
+        @keyframes vd-view { from { opacity: 0; transform: translateY(7px) } to { opacity: 1; transform: none } }
+        .anim-backdrop { animation: vd-fade .22s ease-out both; }
+        .anim-pop { animation: vd-pop .3s cubic-bezier(.16,1,.3,1) both; }
+        .anim-sheet { animation: vd-sheet .34s cubic-bezier(.16,1,.3,1) both; }
+        .anim-view { animation: vd-view .3s cubic-bezier(.16,1,.3,1) both; }
+        .press { transition: transform .12s cubic-bezier(.16,1,.3,1), background-color .18s ease, color .18s ease, border-color .18s ease, box-shadow .2s ease; }
+        .press:active { transform: scale(.96); }
+        .lift { transition: transform .2s cubic-bezier(.16,1,.3,1), border-color .18s ease, box-shadow .25s ease; }
+        .lift:hover { transform: translateY(-2px); }
+        @media (prefers-reduced-motion: reduce) {
+          .anim-backdrop, .anim-pop, .anim-sheet, .anim-view { animation: none; }
+          .press:active, .sd-tbtn:active, .lift:hover { transform: none; }
+        }
         .wp-prose p { margin: 0 0 1em; }
         .wp-prose h1, .wp-prose h2, .wp-prose h3, .wp-prose h4 { font-weight: 600; margin: 1.6em 0 .6em; font-size: 1.05em; letter-spacing: .04em; }
         .wp-prose ul, .wp-prose ol { margin: 0 0 1em; padding-left: 1.4em; list-style: disc; }
@@ -1212,7 +1231,7 @@ export default function SettingsDiary() {
           <div className="mb-5">
             <div className="text-[8px] tk-faint uppercase mb-1.5" style={{ letterSpacing: '.24em' }}>PR</div>
             <div
-              className="relative overflow-hidden rounded-[2px] border bd-line"
+              className="relative overflow-hidden rounded-[2px] border bd-line lift"
               onTouchStart={(e) => { adTouchX.current = e.touches[0].clientX; }}
               onTouchEnd={(e) => {
                 if (adTouchX.current == null || ads.length <= 1) return;
@@ -1389,7 +1408,7 @@ export default function SettingsDiary() {
 
         {/* ── Calendar ── */}
         {view === 'calendar' && (
-        <div className="border bd-line rounded-[2px] bg-card">
+        <div key="v-calendar" className="border bd-line rounded-[2px] bg-card anim-view">
           <div className="flex items-center justify-between px-6 py-5 border-b bd-line">
             <button
               onClick={prevMonth}
@@ -1475,7 +1494,7 @@ export default function SettingsDiary() {
 
         {/* ── Timeline ── */}
         {view === 'timeline' && (
-        <div className="border bd-line rounded-[2px] bg-card">
+        <div key="v-timeline" className="border bd-line rounded-[2px] bg-card anim-view">
           <div className="px-6 py-5 border-b bd-line">
             <div className="flex items-end justify-between flex-wrap gap-3">
               <div>
@@ -1709,7 +1728,7 @@ export default function SettingsDiary() {
 
         {/* ── Record ── */}
         {view === 'stats' && (
-        <div className="border bd-line rounded-[2px] bg-card mb-5">
+        <div key="v-record" className="border bd-line rounded-[2px] bg-card mb-5 anim-view">
           <div className="px-6 py-5 border-b bd-line flex items-end justify-between flex-wrap gap-3">
             <div>
               <div className="text-[9px] tk-dim uppercase mb-1.5" style={{ letterSpacing: '.28em' }}>Record</div>
@@ -1831,7 +1850,7 @@ export default function SettingsDiary() {
 
         {/* ── Analysis ── */}
         {view === 'stats' && (
-        <div className="border bd-line rounded-[2px] bg-card">
+        <div key="v-analysis" className="border bd-line rounded-[2px] bg-card anim-view" style={{ animationDelay: '.05s' }}>
           <div className="px-6 py-5 border-b bd-line">
             <div className="flex items-end justify-between flex-wrap gap-3">
               <div>
@@ -1967,8 +1986,8 @@ export default function SettingsDiary() {
         const Icon = slide.icon;
         const isLast = guideStep === GUIDE_SLIDES.length - 1;
         return (
-          <div className="fixed inset-0 z-50 bg-backdrop flex items-center justify-center p-4">
-            <div className="bg-modal border bd-line rounded-[3px] w-full max-w-sm overflow-hidden">
+          <div className="fixed inset-0 z-50 bg-backdrop anim-backdrop flex items-center justify-center p-4">
+            <div className="bg-modal border bd-line rounded-[3px] w-full max-w-sm overflow-hidden anim-pop">
               <div className="px-7 pt-9 pb-7 text-center">
                 <div className="w-16 h-16 mx-auto mb-6 rounded-[14px] bg-perisoft flex items-center justify-center">
                   {Icon === 'logo'
@@ -2028,11 +2047,11 @@ export default function SettingsDiary() {
       {/* ── WP info page modal (about / privacy — edited in WordPress) ── */}
       {infoPage && (
         <div
-          className="fixed inset-0 z-50 bg-backdrop flex items-center justify-center p-4 sm:p-8"
+          className="fixed inset-0 z-50 bg-backdrop anim-backdrop flex items-center justify-center p-4 sm:p-8"
           onClick={() => setInfoPage(null)}
         >
           <div
-            className="bg-modal border bd-line rounded-[2px] w-full max-w-2xl max-h-[85vh] overflow-y-auto sd-scroll"
+            className="bg-modal border bd-line rounded-[2px] w-full max-w-2xl max-h-[85vh] overflow-y-auto sd-scroll anim-pop"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="sticky top-0 bg-modal border-b bd-line px-6 py-4 flex items-center justify-between gap-3 z-10">
@@ -2058,11 +2077,11 @@ export default function SettingsDiary() {
       {/* ── Menu (bottom sheet on mobile, centered panel on desktop) ── */}
       {menuOpen && (
         <div
-          className="fixed inset-0 z-50 bg-backdrop flex items-end sm:items-center justify-center sm:p-4"
+          className="fixed inset-0 z-50 bg-backdrop anim-backdrop flex items-end sm:items-center justify-center sm:p-4"
           onClick={() => setMenuOpen(false)}
         >
           <div
-            className="bg-modal border bd-line rounded-t-[14px] sm:rounded-[3px] w-full sm:max-w-xs overflow-hidden"
+            className="bg-modal border bd-line rounded-t-[14px] sm:rounded-[3px] w-full sm:max-w-xs overflow-hidden anim-sheet"
             style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -2135,9 +2154,9 @@ export default function SettingsDiary() {
             <button
               key={id}
               onClick={() => action ? setMenuOpen(true) : setView(id)}
-              className={`flex-1 pt-2.5 pb-2 flex flex-col items-center gap-1 transition ${active ? 'tk-acc' : 'tk-dim'}`}
+              className={`flex-1 pt-2.5 pb-2 flex flex-col items-center gap-1 press ${active ? 'tk-acc' : 'tk-dim'}`}
             >
-              <Icon className="w-5 h-5" strokeWidth={active ? 2 : 1.5} />
+              <Icon className="w-5 h-5 transition-transform" strokeWidth={active ? 2 : 1.5} style={{ transform: active ? 'scale(1.08)' : 'none' }} />
               <span className="text-[9px] uppercase font-medium" style={{ letterSpacing: '.18em' }}>{label}</span>
             </button>
           );
@@ -2147,11 +2166,11 @@ export default function SettingsDiary() {
       {/* ── Entry Modal ── */}
       {selectedDate && (
         <div
-          className="fixed inset-0 bg-backdrop backdrop-blur-[2px] flex items-end sm:items-center justify-center z-50 p-0 sm:p-6"
+          className="fixed inset-0 bg-backdrop backdrop-blur-[2px] anim-backdrop flex items-end sm:items-center justify-center z-50 p-0 sm:p-6"
           onClick={closeModal}
         >
           <div
-            className="bg-modal border bd-line rounded-[2px] w-full sm:max-w-2xl max-h-[90vh] overflow-y-auto sd-scroll relative shadow-2xl shadow-black/10"
+            className="bg-modal border bd-line rounded-t-[14px] sm:rounded-[2px] w-full sm:max-w-2xl max-h-[90vh] overflow-y-auto sd-scroll relative shadow-2xl shadow-black/10 anim-sheet"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Modal header */}
