@@ -1,5 +1,6 @@
-// ── WordPress(mone2.jp)をヘッドレス CMS として利用 ──────────────────────────
+// ── WordPress(vildup.mone2.jp)をヘッドレス CMS として利用 ───────────────────
 //
+// VILDUP 専用の WP(noindex、ブログ本体とは別インストール)を編集画面として使う。
 // 編集は WordPress の管理画面、アプリは REST API で読むだけ(認証不要・GET のみ)。
 // 対応コンテンツ(すべて「固定ページ」、スラッグで紐付け):
 //   - vildup-about    … 「このアプリについて」
@@ -13,7 +14,7 @@
 
 import { storage } from './storage';
 
-const WP_BASE = 'https://mone2.jp/wp-json/wp/v2';
+const WP_BASE = 'https://vildup.mone2.jp/wp-json/wp/v2';
 const SLUGS = {
   about: 'vildup-about',
   privacy: 'vildup-privacy',
